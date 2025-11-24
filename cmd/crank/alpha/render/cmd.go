@@ -28,7 +28,7 @@ type Cmd struct {
 	// Subcommands and flags will appear in the CLI help output in the same
 	// order they're specified here. Keep them in alphabetical order.
 	Op   op.Cmd   `cmd:"" help:"Render an operation."`
-	Test test.Cmd `cmd:"" help:"Test render operation and assert results."`
+	Test test.Cmd `cmd:"" help:"Render composite resources (XRs) and assert results."`
 	XR   xr.Cmd   `cmd:"" help:"Render a composite resource (XR)."`
 }
 
