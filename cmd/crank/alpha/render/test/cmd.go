@@ -30,6 +30,7 @@ import (
 // Cmd arguments and flags for alpha render test subcommand.
 type Cmd struct {
 	// Arguments.
+	TestDir string `arg:"" optional:"" type:"path" default:"tests" help:"Directory containing test cases."`
 
 	// Flags. Keep them in alphabetical order.
 
@@ -62,7 +63,10 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	defer cancel()
 
 	// Run the test
-	_, err := Test(ctx, log, Inputs{})
+	_, err := Test(ctx, log, Inputs{
+		TestDir:    c.TestDir,
+        FileSystem: c.fs,
+	})
 	if err != nil {
 		return err
 	}

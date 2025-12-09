@@ -41,3 +41,6 @@ AGENTS.md
 
 # Ignore Earthly environment variables
 .env
+
+apis/policy-exemption
+tests/policy-exemption
