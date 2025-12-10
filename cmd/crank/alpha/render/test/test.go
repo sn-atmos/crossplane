@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -37,8 +38,9 @@ import (
 type Inputs struct {
 	TestDir        string
 	FileSystem     afero.Fs
-	OutputFileName string // Output filename, defaults to "expected.yaml"
+	OutputFile     string // Output filename, defaults to "expected.yaml"
 	CompareOutputs bool   // If true, compare actual vs. expected outputs using dyff
+	PackageFile    string // Path to package.yaml, defaults to "apis/package.yaml"
 }
 
 // Outputs contains test results
@@ -56,14 +58,19 @@ type testResult struct {
 // Test
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 
-	outputFileName := in.OutputFileName
-	if outputFileName == "" {
-		outputFileName = "expected.yaml"
+	outputFile := in.OutputFile
+	if outputFile == "" {
+		outputFile = "expected.yaml"
 	}
 
-	// Check if dev-functions.yaml exists
-	if exists, _ := afero.Exists(in.FileSystem, "dev-functions.yaml"); !exists {
-		return Outputs{}, errors.New("dev-functions.yaml not found")
+	packageFile := in.PackageFile
+	if packageFile == "" {
+		packageFile = "apis/package.yaml"
+	}
+
+	// Generate dev-functions.yaml from package.yaml
+	if err := generateDevFunctionsFile(in.FileSystem, packageFile); err != nil {
+		return Outputs{}, errors.Wrap(err, "cannot generate dev-functions.yaml")
 	}
 
 	// Find all directories with a composite-resource.yaml file
@@ -189,7 +196,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		// If not comparing, write the outputs to files
 		for _, dir := range testDirs {
 			result := results[dir]
-			outputPath := filepath.Join(dir, outputFileName)
+			outputPath := filepath.Join(dir, outputFile)
 			if err := afero.WriteFile(in.FileSystem, outputPath, result.actualOutput, 0644); err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
 			}
@@ -198,6 +205,108 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}
 
 	return Outputs{TestDirs: testDirs}, nil
+}
+
+// generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml
+func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
+	// Read package.yaml
+	packageData, err := afero.ReadFile(filesystem, packageFile)
+	if err != nil {
+		return errors.Wrapf(err, "cannot read package file %q", packageFile)
+	}
+
+	// Parse as raw YAML first to inspect structure
+	var raw struct {
+		Spec struct {
+			DependsOn []struct {
+				Kind    string `yaml:"kind"`
+				Package string `yaml:"package"`
+				Version string `yaml:"version"`
+			} `yaml:"dependsOn"`
+		} `yaml:"spec"`
+	}
+
+	if err := yaml.Unmarshal(packageData, &raw); err != nil {
+		return errors.Wrap(err, "cannot unmarshal package.yaml")
+	}
+
+	// Extract functions from dependsOn
+	var functionDocs []map[string]interface{}
+	for _, dep := range raw.Spec.DependsOn {
+		if dep.Kind == "Function" {
+			// Extract function name from package URL
+			functionName := getFunctionName(dep.Package)
+
+			functionDoc := map[string]interface{}{
+				"apiVersion": "pkg.crossplane.io/v1beta1",
+				"kind":       "Function",
+				"metadata": map[string]interface{}{
+					"name": functionName,
+					"annotations": map[string]interface{}{
+						"render.crossplane.io/runtime":                    "Development",
+						"render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
+					},
+				},
+				"spec": map[string]interface{}{
+					"package": dep.Package,
+				},
+			}
+			functionDocs = append(functionDocs, functionDoc)
+		}
+	}
+
+	if len(functionDocs) == 0 {
+		return errors.New("no functions found in package.yaml")
+	}
+
+	// Marshal functions to YAML
+	var yamlDocs [][]byte
+	for _, fn := range functionDocs {
+		fnYAML, err := yaml.Marshal(fn)
+		if err != nil {
+			return errors.Wrap(err, "cannot marshal function to YAML")
+		}
+		yamlDocs = append(yamlDocs, fnYAML)
+	}
+
+	// Join with --- separator
+	var outputBytes []byte
+	for i, doc := range yamlDocs {
+		if i > 0 {
+			outputBytes = append(outputBytes, []byte("\n---\n")...)
+		}
+		outputBytes = append(outputBytes, doc...)
+	}
+
+	// Write to dev-functions.yaml
+	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0644); err != nil {
+		return errors.Wrap(err, "cannot write dev-functions.yaml")
+	}
+
+	fmt.Printf("Generated dev-functions.yaml with %d function(s)\n", len(functionDocs))
+	return nil
+}
+
+// getFunctionName extracts a function name from a package URL
+// e.g., "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform" -> "crossplane-contrib-function-patch-and-transform"
+func getFunctionName(packageURL string) string {
+	// Remove version tag if present (everything after :)
+	if idx := strings.Index(packageURL, ":"); idx != -1 {
+		packageURL = packageURL[:idx]
+	}
+
+	// Split by /
+	segments := strings.Split(packageURL, "/")
+
+	if len(segments) >= 2 {
+		// Get last two segments: org/function-name
+		org := segments[len(segments)-2]
+		funcName := segments[len(segments)-1]
+
+		return fmt.Sprintf("%s-%s", org, funcName)
+	}
+
+	return packageURL
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file

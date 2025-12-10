@@ -33,8 +33,10 @@ type Cmd struct {
 	TestDir string `arg:"" optional:"" type:"path" default:"tests" help:"Directory containing test cases."`
 
 	// Flags. Keep them in alphabetical order.
-
-	Timeout time.Duration `default:"1m" help:"How long to run before timing out."`
+	Compare     bool          `short:"c" help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files."`
+    OutputFile  string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
+    PackageFile string        `default:"apis/package.yaml" help:"Path to package.yaml file for generating dev-functions.yaml."`
+	Timeout     time.Duration `default:"1m" help:"How long to run before timing out."`
 
 	fs afero.Fs
 }
@@ -42,12 +44,21 @@ type Cmd struct {
 // Help prints out the help for the alpha render op command.
 func (c *Cmd) Help() string {
 	return `
-This command renders XRs and asserts the outputs are as expected.
+This command renders XRs and either generates expected outputs or compares them.
 
 Examples:
 
-  # Run a render test.
+  # Generate/update expected.yaml files for all tests
   crossplane alpha render test
+
+  # Compare actual outputs with expected.yaml files
+  crossplane alpha render test --compare
+
+  # Test a specific directory
+  crossplane alpha render test tests/my-test --compare
+
+  # Generate outputs with a different filename
+  crossplane alpha render test --output-file=snapshot.yaml
 `
 }
 
@@ -64,9 +75,11 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 
 	// Run the test
 	_, err := Test(ctx, log, Inputs{
-		TestDir:    c.TestDir,
-        FileSystem: c.fs,
-		CompareOutputs: true,
+		TestDir:        c.TestDir,
+        FileSystem:     c.fs,
+        CompareOutputs: c.Compare,
+        OutputFile:     c.OutputFile,
+        PackageFile:    c.PackageFile,
 	})
 	if err != nil {
 		return err
