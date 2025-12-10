@@ -66,6 +66,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	_, err := Test(ctx, log, Inputs{
 		TestDir:    c.TestDir,
         FileSystem: c.fs,
+		CompareOutputs: true,
 	})
 	if err != nil {
 		return err

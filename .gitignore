@@ -42,5 +42,9 @@ AGENTS.md
 # Ignore Earthly environment variables
 .env
 
+# Files used for local testing
 apis/policy-exemption
 tests/policy-exemption
+dev-functions.yaml
+Makefile
+render.mk
