@@ -17,8 +17,10 @@ limitations under the License.
 package test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -71,6 +73,13 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Generate dev-functions.yaml from package.yaml
 	if err := generateDevFunctionsFile(in.FileSystem, packageFile); err != nil {
 		return Outputs{}, errors.Wrap(err, "cannot generate dev-functions.yaml")
+	}
+
+	// Start function containers (unless in CI)
+	if os.Getenv("CI") == "" {
+		if err := startFunctionContainers(ctx, in.FileSystem); err != nil {
+			return Outputs{}, errors.Wrap(err, "cannot start function containers")
+		}
 	}
 
 	// Find all directories with a composite-resource.yaml file
@@ -234,8 +243,31 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	var functionDocs []map[string]interface{}
 	for _, dep := range raw.Spec.DependsOn {
 		if dep.Kind == "Function" {
-			// Extract function name from package URL
-			functionName := getFunctionName(dep.Package)
+			// Build full package URL with version
+            packageWithVersion := dep.Package
+			if dep.Version != "" {
+                // Extract the first version from constraint like ">=v0.9.1, <v1.0.0"
+                versionParts := strings.Split(dep.Version, ",")
+                if len(versionParts) > 0 {
+                    // Get the first part and extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+                    firstPart := strings.TrimSpace(versionParts[0])
+
+					// Verify the first constraint starts with '>='
+                    if !strings.HasPrefix(firstPart, ">=") {
+                        return errors.Errorf("invalid version constraint for %s: expected first constraint to start with '>=' but got %q", dep.Package, firstPart)
+                    }
+
+                    // Extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+                    version := strings.TrimPrefix(firstPart, ">=")
+                    version = strings.TrimSpace(version)
+                    if version != "" {
+                        packageWithVersion = fmt.Sprintf("%s:%s", dep.Package, version)
+                    }
+                }
+            }
+			
+			// Extract function name from package URL (without version)
+            functionName := getFunctionName(dep.Package)
 
 			functionDoc := map[string]interface{}{
 				"apiVersion": "pkg.crossplane.io/v1beta1",
@@ -248,7 +280,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 					},
 				},
 				"spec": map[string]interface{}{
-					"package": dep.Package,
+					"package": packageWithVersion,
 				},
 			}
 			functionDocs = append(functionDocs, functionDoc)
@@ -307,6 +339,81 @@ func getFunctionName(packageURL string) string {
 	}
 
 	return packageURL
+}
+
+// startFunctionContainers reads dev-functions.yaml and starts Docker containers for each function
+func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
+	// Read dev-functions.yaml
+	devFunctionsData, err := afero.ReadFile(filesystem, "dev-functions.yaml")
+	if err != nil {
+		return errors.Wrap(err, "cannot read dev-functions.yaml")
+	}
+
+	// Parse YAML documents
+	decoder := yaml.NewDecoder(bytes.NewReader(devFunctionsData))
+
+	var functions []struct {
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+		Spec struct {
+			Package string `yaml:"package"`
+		} `yaml:"spec"`
+	}
+
+	for {
+		var fn struct {
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				Package string `yaml:"package"`
+			} `yaml:"spec"`
+		}
+
+		if err := decoder.Decode(&fn); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return errors.Wrap(err, "cannot decode function from dev-functions.yaml")
+		}
+
+		functions = append(functions, fn)
+	}
+
+	// Start Docker containers for each function
+	for _, fn := range functions {
+		// Check if container already exists (running or stopped)
+		inspectCmd := exec.CommandContext(ctx, "docker", "inspect", fn.Metadata.Name)
+		if err := inspectCmd.Run(); err == nil {
+			// Container already exists, skip
+			fmt.Printf("Container %s already exists (skipping)\n", fn.Metadata.Name)
+			continue
+		}
+
+		// Container doesn't exist, start it
+        fmt.Printf("Starting container: %s %s\n", fn.Metadata.Name, fn.Spec.Package)
+        runCmd := exec.CommandContext(ctx, "docker", "run",
+            "--rm", "-d",
+            "--net", "devnet",
+            "--name", fn.Metadata.Name,
+            fn.Spec.Package,
+            "--insecure",
+        )
+
+		var stderr bytes.Buffer
+		runCmd.Stderr = &stderr
+
+		if err := runCmd.Run(); err != nil {
+			// Log error but continue with other containers
+			fmt.Fprintf(os.Stderr, "Warning: failed to start container %s: %v\n%s\n",
+				fn.Metadata.Name, err, stderr.String())
+		} else {
+			fmt.Printf("✓ Started container %s\n", fn.Metadata.Name)
+		}
+	}
+
+	return nil
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file
