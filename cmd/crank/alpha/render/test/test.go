@@ -38,11 +38,12 @@ import (
 
 // Inputs contains all inputs to the test process
 type Inputs struct {
-	TestDir        string
-	FileSystem     afero.Fs
-	OutputFile     string // Output filename, defaults to "expected.yaml"
-	CompareOutputs bool   // If true, compare actual vs. expected outputs using dyff
-	PackageFile    string // Path to package.yaml, defaults to "apis/package.yaml"
+	TestDir          string
+	FileSystem       afero.Fs
+	OutputFile       string // Output filename, defaults to "expected.yaml"
+	CompareOutputs   bool   // If true, compare actual vs. expected outputs using dyff
+	PackageFile      string // Path to package.yaml, defaults to "apis/package.yaml"
+	RestartFunctions bool   // If true, restart function containers even if running
 }
 
 // Outputs contains test results
@@ -76,11 +77,18 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}
 
 	// Start function containers (unless in CI)
-	if os.Getenv("CI") == "" {
-		if err := startFunctionContainers(ctx, in.FileSystem); err != nil {
-			return Outputs{}, errors.Wrap(err, "cannot start function containers")
-		}
-	}
+    if os.Getenv("CI") == "" {
+        // Stop existing containers if restart requested
+        if in.RestartFunctions {
+            if err := stopFunctionContainers(ctx, in.FileSystem); err != nil {
+                log.Info("Warning: failed to stop function containers", "error", err)
+            }
+        }
+
+        if err := startFunctionContainers(ctx, in.FileSystem); err != nil {
+            return Outputs{}, errors.Wrap(err, "cannot start function containers")
+        }
+    }
 
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
@@ -414,6 +422,54 @@ func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
 	}
 
 	return nil
+}
+
+// stopFunctionContainers stops all function containers defined in dev-functions.yaml
+func stopFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
+    // Read dev-functions.yaml
+    devFunctionsData, err := afero.ReadFile(filesystem, "dev-functions.yaml")
+    if err != nil {
+        return errors.Wrap(err, "cannot read dev-functions.yaml")
+    }
+
+    // Parse YAML documents
+    decoder := yaml.NewDecoder(bytes.NewReader(devFunctionsData))
+
+    var functionNames []string
+
+    for {
+        var fn struct {
+            Metadata struct {
+                Name string `yaml:"name"`
+            } `yaml:"metadata"`
+        }
+
+        if err := decoder.Decode(&fn); err != nil {
+            if err == io.EOF {
+                break
+            }
+            return errors.Wrap(err, "cannot decode function from dev-functions.yaml")
+        }
+
+        functionNames = append(functionNames, fn.Metadata.Name)
+    }
+
+    // Stop each container
+    for _, name := range functionNames {
+        fmt.Printf("Stopping container: %s\n", name)
+        rmCmd := exec.CommandContext(ctx, "docker", "rm", "-f", name)
+        
+        var stderr bytes.Buffer
+        rmCmd.Stderr = &stderr
+
+        if err := rmCmd.Run(); err != nil {
+            // Log warning but continue
+            fmt.Fprintf(os.Stderr, "Warning: failed to stop container %s: %v\n%s\n",
+                name, err, stderr.String())
+        }
+    }
+
+    return nil
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file
