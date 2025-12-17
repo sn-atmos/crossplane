@@ -536,7 +536,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			return nil, errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
 		}
 
-		contextMap := make(map[string][]byte)
+		contexts := make(map[string][]byte)
 		for _, fileInfo := range contextFiles {
 			if fileInfo.IsDir() {
 				continue
@@ -555,12 +555,12 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 			// Use filename without extension as context name
 			contextName := fileInfo.Name()[:len(fileInfo.Name())-len(".json")]
-			contextMap[contextName] = contextData
+			contexts[contextName] = contextData
 			fmt.Printf("Found context: %s from %s\n", contextName, contextFilePath)
 		}
 
-		if len(contextMap) > 0 {
-			renderInputs.Context = contextMap
+		if len(contexts) > 0 {
+			renderInputs.Context = contexts
 		}
 	}
 
