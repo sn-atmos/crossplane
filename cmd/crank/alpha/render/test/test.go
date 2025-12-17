@@ -554,7 +554,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			}
 
 			// Use filename without extension as context name
-			contextName := fileInfo.Name()[:len(fileInfo.Name())-len(".json")]
+			contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
 			contexts[contextName] = contextData
 			fmt.Printf("Found context: %s from %s\n", contextName, contextFilePath)
 		}
