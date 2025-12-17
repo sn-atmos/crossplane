@@ -273,13 +273,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	}
 
 	// Join with --- separator
-	var outputBytes []byte
-	for i, doc := range yamlDocs {
-		if i > 0 {
-			outputBytes = append(outputBytes, []byte("\n---\n")...)
-		}
-		outputBytes = append(outputBytes, doc...)
-	}
+	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
 
 	// Write to dev-functions.yaml
 	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0o644); err != nil {
@@ -581,14 +575,8 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 		yamlDocs = append(yamlDocs, composedYAML)
 	}
 
-	// Join all YAML documents with "---" separator
-	var outputBytes []byte
-	for i, doc := range yamlDocs {
-		if i > 0 {
-			outputBytes = append(outputBytes, []byte("\n---\n")...)
-		}
-		outputBytes = append(outputBytes, doc...)
-	}
+	// Join with --- separator
+	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
 
 	return outputBytes, nil
 }
