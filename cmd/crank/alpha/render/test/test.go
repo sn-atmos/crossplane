@@ -27,6 +27,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gonvenience/bunt"
+	"github.com/gonvenience/ytbx"
+	"github.com/homeport/dyff/pkg/dyff"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 
@@ -38,8 +41,8 @@ import (
 )
 
 const (
-    // CompositeFileName is the name of the file containing the composite resource.
-    CompositeFileName = "composite-resource.yaml"
+	// CompositeFileName is the name of the file containing the composite resource.
+	CompositeFileName = "composite-resource.yaml"
 )
 
 // Inputs contains all inputs to the test process.
@@ -126,50 +129,45 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 				return Outputs{}, errors.Wrapf(err, "cannot read expected output from %q", expectedPath)
 			}
 
-			// Use temporary files for dyff
-			tmpExpected, err := os.CreateTemp("", "expected-*.yaml")
+			// Parse YAML documents using ytbx
+			expectedDocs, err := ytbx.LoadDocuments(expectedOutput)
 			if err != nil {
-				return Outputs{}, errors.Wrap(err, "cannot create temp file for expected output")
+				return Outputs{}, errors.Wrapf(err, "cannot parse expected YAML for %q", dir)
 			}
-			defer os.Remove(tmpExpected.Name())
-			defer tmpExpected.Close()
 
-			tmpActual, err := os.CreateTemp("", "actual-*.yaml")
+			actualDocs, err := ytbx.LoadDocuments(actualOutput)
 			if err != nil {
-				return Outputs{}, errors.Wrap(err, "cannot create temp file for actual output")
-			}
-			defer os.Remove(tmpActual.Name())
-			defer tmpActual.Close()
-
-			// Write contents to temp files
-			if _, err := tmpExpected.Write(expectedOutput); err != nil {
-				return Outputs{}, errors.Wrap(err, "cannot write expected output to temp file")
-			}
-			if _, err := tmpActual.Write(actualOutput); err != nil {
-				return Outputs{}, errors.Wrap(err, "cannot write actual output to temp file")
+				return Outputs{}, errors.Wrapf(err, "cannot parse actual YAML for %q", dir)
 			}
 
-			// Close files before running dyff
-			tmpExpected.Close()
-			tmpActual.Close()
+			// Compare using dyff library
+			report, err := dyff.CompareInputFiles(
+				ytbx.InputFile{Documents: expectedDocs},
+				ytbx.InputFile{Documents: actualDocs},
+			)
+			if err != nil {
+				return Outputs{}, errors.Wrapf(err, "cannot compare files for %q", dir)
+			}
 
-			// Run dyff with direct terminal output for colors
-			cmd := exec.CommandContext(ctx, "dyff", "between", "--set-exit-code", "--omit-header", tmpExpected.Name(), tmpActual.Name())
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
+			// Check if there are differences
+			if len(report.Diffs) > 0 {
+				fmt.Printf("\n❌ Differences found in %s:\n", dir)
 
-			if err := cmd.Run(); err != nil {
-				exitErr := &exec.ExitError{}
-				if errors.As(err, &exitErr) {
-					// dyff returns non-zero exit code if files differ
-					if exitErr.ExitCode() != 0 {
-						fmt.Printf("\n❌ Differences found in %s:\n", dir)
-						hasErrors = true
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "Warning: dyff failed for %s: %v\n", dir, err)
-					hasErrors = true
+				// Create a human-readable report
+				reportWriter := &dyff.HumanReport{
+					Report:     report,
+					OmitHeader: true,
 				}
+
+				// Write report to stdout with colors
+				var buf bytes.Buffer
+				if err := reportWriter.WriteReport(&buf); err != nil {
+					return Outputs{}, errors.Wrapf(err, "cannot write diff report for %q", dir)
+				}
+
+				// Print with colors if terminal supports it
+				fmt.Print(bunt.Sprint(buf.String()))
+				hasErrors = true
 			} else {
 				fmt.Printf("✓ No differences in %s\n", dir)
 			}
