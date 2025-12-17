@@ -32,10 +32,10 @@ import (
 	"github.com/homeport/dyff/pkg/dyff"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 )
@@ -459,9 +459,12 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	}
 
 	// Extract composition name
-	compositionName, err := findCompositionName(compositeResource)
+	compositionName, found, err := unstructured.NestedString(compositeResource.Object, "spec", "crossplane", "compositionRef", "name")
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot extract composition name from %q", compositeResourceFilePath)
+	}
+	if !found {
+		return nil, errors.Errorf("spec.crossplane.compositionRef.name not found in %q", compositeResourceFilePath)
 	}
 	fmt.Printf("Composition name: %s\n", compositionName)
 
@@ -579,31 +582,6 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
 
 	return outputBytes, nil
-}
-
-// findCompositionName extracts the composition name from .spec.crossplane.compositionRef.name.
-func findCompositionName(compositeResource *composite.Unstructured) (string, error) {
-	spec, ok := compositeResource.Object["spec"].(map[string]any)
-	if !ok {
-		return "", errors.New("spec not found in composite resource")
-	}
-
-	crossplane, ok := spec["crossplane"].(map[string]any)
-	if !ok {
-		return "", errors.New("spec.crossplane not found in composite resource")
-	}
-
-	compositionRef, ok := crossplane["compositionRef"].(map[string]any)
-	if !ok {
-		return "", errors.New("spec.crossplane.compositionRef not found in composite resource")
-	}
-
-	compositionName, ok := compositionRef["name"].(string)
-	if !ok {
-		return "", errors.New("spec.crossplane.compositionRef.name not found or not a string")
-	}
-
-	return compositionName, nil
 }
 
 // findCompositionFile searches for a Composition YAML file with the given composition name.
