@@ -117,12 +117,6 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 			actualOutput := results[dir]
 			expectedPath := filepath.Join(dir, "expected.yaml")
 
-			// Check if expected file exists
-			if exists, _ := afero.Exists(in.FileSystem, expectedPath); !exists {
-				fmt.Printf("Warning: expected.yaml not found in %s, skipping comparison\n", dir)
-				continue
-			}
-
 			// Read expected output
 			expectedOutput, err := afero.ReadFile(in.FileSystem, expectedPath)
 			if err != nil {
