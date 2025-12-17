@@ -30,14 +30,14 @@ import (
 // Cmd arguments and flags for alpha render test subcommand.
 type Cmd struct {
 	// Arguments.
-	TestDir string `arg:"" optional:"" type:"path" default:"tests" help:"Directory containing test cases."`
+	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." optional:"" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	Compare          bool          `short:"c" help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files."`
-    OutputFile       string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
-    PackageFile      string        `default:"apis/package.yaml" help:"Path to package.yaml file for generating dev-functions.yaml."`
-	RestartFunctions bool          `short:"r" help:"Restart function containers even if they are already running."`
-	Timeout          time.Duration `default:"1m" help:"How long to run before timing out."`
+	Compare          bool          `help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files." short:"c"`
+	OutputFile       string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
+	PackageFile      string        `default:"apis/package.yaml"                                                                             help:"Path to package.yaml file for generating dev-functions.yaml."`
+	RestartFunctions bool          `help:"Restart function containers even if they are already running."                                    short:"r"`
+	Timeout          time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
 
 	fs afero.Fs
 }
@@ -80,10 +80,10 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	// Run the test
 	_, err := Test(ctx, log, Inputs{
 		TestDir:          c.TestDir,
-        FileSystem:       c.fs,
-        CompareOutputs:   c.Compare,
-        OutputFile:       c.OutputFile,
-        PackageFile:      c.PackageFile,
+		FileSystem:       c.fs,
+		CompareOutputs:   c.Compare,
+		OutputFile:       c.OutputFile,
+		PackageFile:      c.PackageFile,
 		RestartFunctions: c.RestartFunctions,
 	})
 	if err != nil {

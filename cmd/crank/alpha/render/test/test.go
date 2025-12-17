@@ -28,15 +28,17 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/spf13/afero"
+	"gopkg.in/yaml.v3"
+
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
-	"github.com/spf13/afero"
-	"gopkg.in/yaml.v3"
 )
 
-// Inputs contains all inputs to the test process
+// Inputs contains all inputs to the test process.
 type Inputs struct {
 	TestDir          string
 	FileSystem       afero.Fs
@@ -46,21 +48,20 @@ type Inputs struct {
 	RestartFunctions bool   // If true, restart function containers even if running
 }
 
-// Outputs contains test results
+// Outputs contains test results.
 type Outputs struct {
 	TestDirs []string // Directories containing tests
 }
 
-// testResult holds the result of processing a single test directory
+// testResult holds the result of processing a single test directory.
 type testResult struct {
 	dir          string
 	actualOutput []byte
 	err          error
 }
 
-// Test
+// Test.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-
 	outputFile := in.OutputFile
 	if outputFile == "" {
 		outputFile = "expected.yaml"
@@ -77,18 +78,18 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}
 
 	// Start function containers (unless in CI)
-    if os.Getenv("CI") == "" {
-        // Stop existing containers if restart requested
-        if in.RestartFunctions {
-            if err := stopFunctionContainers(ctx, in.FileSystem); err != nil {
-                log.Info("Warning: failed to stop function containers", "error", err)
-            }
-        }
+	if os.Getenv("CI") == "" {
+		// Stop existing containers if restart requested
+		if in.RestartFunctions {
+			if err := stopFunctionContainers(ctx, in.FileSystem); err != nil {
+				log.Info("Warning: failed to stop function containers", "error", err)
+			}
+		}
 
-        if err := startFunctionContainers(ctx, in.FileSystem); err != nil {
-            return Outputs{}, errors.Wrap(err, "cannot start function containers")
-        }
-    }
+		if err := startFunctionContainers(ctx, in.FileSystem); err != nil {
+			return Outputs{}, errors.Wrap(err, "cannot start function containers")
+		}
+	}
 
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
@@ -189,7 +190,8 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 			cmd.Stderr = os.Stderr
 
 			if err := cmd.Run(); err != nil {
-				if exitErr, ok := err.(*exec.ExitError); ok {
+				exitErr := &exec.ExitError{}
+				if errors.As(err, &exitErr) {
 					// dyff returns non-zero exit code if files differ
 					if exitErr.ExitCode() != 0 {
 						fmt.Printf("\n❌ Differences found in %s:\n", dir)
@@ -214,7 +216,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		for _, dir := range testDirs {
 			result := results[dir]
 			outputPath := filepath.Join(dir, outputFile)
-			if err := afero.WriteFile(in.FileSystem, outputPath, result.actualOutput, 0644); err != nil {
+			if err := afero.WriteFile(in.FileSystem, outputPath, result.actualOutput, 0o644); err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
 			}
 			fmt.Printf("Wrote output to: %s\n", outputPath)
@@ -224,7 +226,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	return Outputs{TestDirs: testDirs}, nil
 }
 
-// generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml
+// generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml.
 func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	// Read package.yaml
 	packageData, err := afero.ReadFile(filesystem, packageFile)
@@ -248,46 +250,46 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	}
 
 	// Extract functions from dependsOn
-	var functionDocs []map[string]interface{}
+	var functionDocs []map[string]any
 	for _, dep := range raw.Spec.DependsOn {
 		if dep.Kind == "Function" {
 			// Build full package URL with version
-            packageWithVersion := dep.Package
+			packageWithVersion := dep.Package
 			if dep.Version != "" {
-                // Extract the first version from constraint like ">=v0.9.1, <v1.0.0"
-                versionParts := strings.Split(dep.Version, ",")
-                if len(versionParts) > 0 {
-                    // Get the first part and extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
-                    firstPart := strings.TrimSpace(versionParts[0])
+				// Extract the first version from constraint like ">=v0.9.1, <v1.0.0"
+				versionParts := strings.Split(dep.Version, ",")
+				if len(versionParts) > 0 {
+					// Get the first part and extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+					firstPart := strings.TrimSpace(versionParts[0])
 
 					// Verify the first constraint starts with '>='
-                    if !strings.HasPrefix(firstPart, ">=") {
-                        return errors.Errorf("invalid version constraint for %s: expected first constraint to start with '>=' but got %q", dep.Package, firstPart)
-                    }
+					if !strings.HasPrefix(firstPart, ">=") {
+						return errors.Errorf("invalid version constraint for %s: expected first constraint to start with '>=' but got %q", dep.Package, firstPart)
+					}
 
-                    // Extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
-                    version := strings.TrimPrefix(firstPart, ">=")
-                    version = strings.TrimSpace(version)
-                    if version != "" {
-                        packageWithVersion = fmt.Sprintf("%s:%s", dep.Package, version)
-                    }
-                }
-            }
-			
+					// Extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+					version := strings.TrimPrefix(firstPart, ">=")
+					version = strings.TrimSpace(version)
+					if version != "" {
+						packageWithVersion = fmt.Sprintf("%s:%s", dep.Package, version)
+					}
+				}
+			}
+
 			// Extract function name from package URL (without version)
-            functionName := getFunctionName(dep.Package)
+			functionName := getFunctionName(dep.Package)
 
-			functionDoc := map[string]interface{}{
+			functionDoc := map[string]any{
 				"apiVersion": "pkg.crossplane.io/v1beta1",
 				"kind":       "Function",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"name": functionName,
-					"annotations": map[string]interface{}{
+					"annotations": map[string]any{
 						"render.crossplane.io/runtime":                    "Development",
 						"render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
 					},
 				},
-				"spec": map[string]interface{}{
+				"spec": map[string]any{
 					"package": packageWithVersion,
 				},
 			}
@@ -319,7 +321,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	}
 
 	// Write to dev-functions.yaml
-	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0644); err != nil {
+	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0o644); err != nil {
 		return errors.Wrap(err, "cannot write dev-functions.yaml")
 	}
 
@@ -328,7 +330,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 }
 
 // getFunctionName extracts a function name from a package URL
-// e.g., "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform" -> "crossplane-contrib-function-patch-and-transform"
+// e.g., "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform" -> "crossplane-contrib-function-patch-and-transform".
 func getFunctionName(packageURL string) string {
 	// Remove version tag if present (everything after :)
 	if idx := strings.Index(packageURL, ":"); idx != -1 {
@@ -349,7 +351,7 @@ func getFunctionName(packageURL string) string {
 	return packageURL
 }
 
-// startFunctionContainers reads dev-functions.yaml and starts Docker containers for each function
+// startFunctionContainers reads dev-functions.yaml and starts Docker containers for each function.
 func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
 	// Read dev-functions.yaml
 	devFunctionsData, err := afero.ReadFile(filesystem, "dev-functions.yaml")
@@ -380,7 +382,7 @@ func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
 		}
 
 		if err := decoder.Decode(&fn); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return errors.Wrap(err, "cannot decode function from dev-functions.yaml")
@@ -400,14 +402,14 @@ func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
 		}
 
 		// Container doesn't exist, start it
-        fmt.Printf("Starting container: %s %s\n", fn.Metadata.Name, fn.Spec.Package)
-        runCmd := exec.CommandContext(ctx, "docker", "run",
-            "--rm", "-d",
-            "--net", "devnet",
-            "--name", fn.Metadata.Name,
-            fn.Spec.Package,
-            "--insecure",
-        )
+		fmt.Printf("Starting container: %s %s\n", fn.Metadata.Name, fn.Spec.Package)
+		runCmd := exec.CommandContext(ctx, "docker", "run",
+			"--rm", "-d",
+			"--net", "devnet",
+			"--name", fn.Metadata.Name,
+			fn.Spec.Package,
+			"--insecure",
+		)
 
 		var stderr bytes.Buffer
 		runCmd.Stderr = &stderr
@@ -424,55 +426,55 @@ func startFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
 	return nil
 }
 
-// stopFunctionContainers stops all function containers defined in dev-functions.yaml
+// stopFunctionContainers stops all function containers defined in dev-functions.yaml.
 func stopFunctionContainers(ctx context.Context, filesystem afero.Fs) error {
-    // Read dev-functions.yaml
-    devFunctionsData, err := afero.ReadFile(filesystem, "dev-functions.yaml")
-    if err != nil {
-        return errors.Wrap(err, "cannot read dev-functions.yaml")
-    }
+	// Read dev-functions.yaml
+	devFunctionsData, err := afero.ReadFile(filesystem, "dev-functions.yaml")
+	if err != nil {
+		return errors.Wrap(err, "cannot read dev-functions.yaml")
+	}
 
-    // Parse YAML documents
-    decoder := yaml.NewDecoder(bytes.NewReader(devFunctionsData))
+	// Parse YAML documents
+	decoder := yaml.NewDecoder(bytes.NewReader(devFunctionsData))
 
-    var functionNames []string
+	var functionNames []string
 
-    for {
-        var fn struct {
-            Metadata struct {
-                Name string `yaml:"name"`
-            } `yaml:"metadata"`
-        }
+	for {
+		var fn struct {
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
 
-        if err := decoder.Decode(&fn); err != nil {
-            if err == io.EOF {
-                break
-            }
-            return errors.Wrap(err, "cannot decode function from dev-functions.yaml")
-        }
+		if err := decoder.Decode(&fn); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return errors.Wrap(err, "cannot decode function from dev-functions.yaml")
+		}
 
-        functionNames = append(functionNames, fn.Metadata.Name)
-    }
+		functionNames = append(functionNames, fn.Metadata.Name)
+	}
 
-    // Stop each container
-    for _, name := range functionNames {
-        fmt.Printf("Stopping container: %s\n", name)
-        rmCmd := exec.CommandContext(ctx, "docker", "rm", "-f", name)
-        
-        var stderr bytes.Buffer
-        rmCmd.Stderr = &stderr
+	// Stop each container
+	for _, name := range functionNames {
+		fmt.Printf("Stopping container: %s\n", name)
+		rmCmd := exec.CommandContext(ctx, "docker", "rm", "-f", name)
 
-        if err := rmCmd.Run(); err != nil {
-            // Log warning but continue
-            fmt.Fprintf(os.Stderr, "Warning: failed to stop container %s: %v\n%s\n",
-                name, err, stderr.String())
-        }
-    }
+		var stderr bytes.Buffer
+		rmCmd.Stderr = &stderr
 
-    return nil
+		if err := rmCmd.Run(); err != nil {
+			// Log warning but continue
+			fmt.Fprintf(os.Stderr, "Warning: failed to stop container %s: %v\n%s\n",
+				name, err, stderr.String())
+		}
+	}
+
+	return nil
 }
 
-// findTestDirectories finds all directories containing a composite-resource.yaml file
+// findTestDirectories finds all directories containing a composite-resource.yaml file.
 func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) {
 	var testDirs []string
 
@@ -491,7 +493,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 	return testDirs, err
 }
 
-// processTestDirectory handles the rendering for a single test directory
+// processTestDirectory handles the rendering for a single test directory.
 func processTestDirectory(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
 	fmt.Printf("Processing test directory: %s\n", dir)
 
@@ -630,19 +632,19 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	return outputBytes, nil
 }
 
-// findCompositionName extracts the composition name from .spec.crossplane.compositionRef.name
+// findCompositionName extracts the composition name from .spec.crossplane.compositionRef.name.
 func findCompositionName(compositeResource *composite.Unstructured) (string, error) {
-	spec, ok := compositeResource.Object["spec"].(map[string]interface{})
+	spec, ok := compositeResource.Object["spec"].(map[string]any)
 	if !ok {
 		return "", errors.New("spec not found in composite resource")
 	}
 
-	crossplane, ok := spec["crossplane"].(map[string]interface{})
+	crossplane, ok := spec["crossplane"].(map[string]any)
 	if !ok {
 		return "", errors.New("spec.crossplane not found in composite resource")
 	}
 
-	compositionRef, ok := crossplane["compositionRef"].(map[string]interface{})
+	compositionRef, ok := crossplane["compositionRef"].(map[string]any)
 	if !ok {
 		return "", errors.New("spec.crossplane.compositionRef not found in composite resource")
 	}
@@ -655,7 +657,7 @@ func findCompositionName(compositeResource *composite.Unstructured) (string, err
 	return compositionName, nil
 }
 
-// findCompositionFile searches for a Composition YAML file with the given composition name
+// findCompositionFile searches for a Composition YAML file with the given composition name.
 func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string) (string, error) {
 	var compositionFile string
 
@@ -707,7 +709,7 @@ func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string)
 		return nil
 	})
 
-	if err != nil && err != filepath.SkipAll {
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
 		return "", err
 	}
 
