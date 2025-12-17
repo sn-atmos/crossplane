@@ -55,14 +55,7 @@ type Outputs struct {
 // Test.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	outputFile := in.OutputFile
-	if outputFile == "" {
-		outputFile = "expected.yaml"
-	}
-
 	packageFile := in.PackageFile
-	if packageFile == "" {
-		packageFile = "apis/package.yaml"
-	}
 
 	// Generate dev-functions.yaml from package.yaml
 	if err := generateDevFunctionsFile(in.FileSystem, packageFile); err != nil {
