@@ -671,11 +671,6 @@ func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string)
 			return nil
 		}
 
-		// Skip dev-extensions.yaml
-		if info.Name() == "dev-extensions.yaml" {
-			return nil
-		}
-
 		// Only check .yaml or .yml files
 		ext := filepath.Ext(path)
 		if ext != ".yaml" && ext != ".yml" {
