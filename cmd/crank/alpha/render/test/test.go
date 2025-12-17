@@ -26,7 +26,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -51,13 +50,6 @@ type Inputs struct {
 // Outputs contains test results.
 type Outputs struct {
 	TestDirs []string // Directories containing tests
-}
-
-// testResult holds the result of processing a single test directory.
-type testResult struct {
-	dir          string
-	actualOutput []byte
-	err          error
 }
 
 // Test.
@@ -105,35 +97,14 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 
 	log.Info("Found test directories", "count", len(testDirs))
 
-	// Process tests in parallel
-	var wg sync.WaitGroup
-	resultsChan := make(chan testResult, len(testDirs))
-
+	// Process tests sequentially
+	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		wg.Add(1)
-		go func(testDir string) {
-			defer wg.Done()
-
-			output, err := processTestDirectory(ctx, log, in.FileSystem, testDir)
-			resultsChan <- testResult{
-				dir:          testDir,
-				actualOutput: output,
-				err:          err,
-			}
-		}(dir)
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-	close(resultsChan)
-
-	// Collect results
-	results := make(map[string]testResult)
-	for result := range resultsChan {
-		if result.err != nil {
-			return Outputs{}, errors.Wrapf(result.err, "failed to process %q", result.dir)
+		output, err := processTestDirectory(ctx, log, in.FileSystem, dir)
+		if err != nil {
+			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
-		results[result.dir] = result
+		results[dir] = output
 	}
 
 	// If CompareOutputs is true, compare expected vs. actual
@@ -142,7 +113,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		hasErrors := false
 
 		for _, dir := range testDirs {
-			result := results[dir]
+			actualOutput := results[dir]
 			expectedPath := filepath.Join(dir, "expected.yaml")
 
 			// Check if expected file exists
@@ -176,7 +147,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 			if _, err := tmpExpected.Write(expectedOutput); err != nil {
 				return Outputs{}, errors.Wrap(err, "cannot write expected output to temp file")
 			}
-			if _, err := tmpActual.Write(result.actualOutput); err != nil {
+			if _, err := tmpActual.Write(actualOutput); err != nil {
 				return Outputs{}, errors.Wrap(err, "cannot write actual output to temp file")
 			}
 
@@ -214,9 +185,9 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	} else {
 		// If not comparing, write the outputs to files
 		for _, dir := range testDirs {
-			result := results[dir]
+			actualOutput := results[dir]
 			outputPath := filepath.Join(dir, outputFile)
-			if err := afero.WriteFile(in.FileSystem, outputPath, result.actualOutput, 0o644); err != nil {
+			if err := afero.WriteFile(in.FileSystem, outputPath, actualOutput, 0o644); err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
 			}
 			fmt.Printf("Wrote output to: %s\n", outputPath)
