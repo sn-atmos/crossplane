@@ -37,6 +37,11 @@ import (
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 )
 
+const (
+    // CompositeFileName is the name of the file containing the composite resource.
+    CompositeFileName = "composite-resource.yaml"
+)
+
 // Inputs contains all inputs to the test process.
 type Inputs struct {
 	TestDir          string
@@ -447,7 +452,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 			return err
 		}
 
-		if !info.IsDir() && info.Name() == "composite-resource.yaml" {
+		if !info.IsDir() && info.Name() == CompositeFileName {
 			testDirs = append(testDirs, filepath.Dir(path))
 		}
 
@@ -461,7 +466,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 func processTestDirectory(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
 	fmt.Printf("Processing test directory: %s\n", dir)
 
-	compositeResourceFilePath := filepath.Join(dir, "composite-resource.yaml")
+	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
 	compositeResource, err := render.LoadCompositeResource(filesystem, compositeResourceFilePath)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot load CompositeResource from %q", compositeResourceFilePath)
