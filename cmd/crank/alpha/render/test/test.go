@@ -37,6 +37,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 )
 
@@ -468,19 +469,13 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	}
 	fmt.Printf("Composition name: %s\n", compositionName)
 
-	// Find the composition file
-	compositionFilePath, err := findCompositionFile(filesystem, ".", compositionName)
+	// Find and load the composition
+	composition, compositionFilePath, err := findComposition(filesystem, ".", compositionName)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot find composition file for %q", compositionName)
+		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
 	fmt.Printf("Composition file: %s\n", compositionFilePath)
-
-	// Load the composition
-	composition, err := render.LoadComposition(filesystem, compositionFilePath)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load Composition from %q", compositionFilePath)
-	}
 
 	// Load functions from dev-functions.yaml
 	functions, err := render.LoadFunctions(filesystem, "dev-functions.yaml")
@@ -584,8 +579,9 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	return outputBytes, nil
 }
 
-// findCompositionFile searches for a Composition YAML file with the given composition name.
-func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string) (string, error) {
+// findComposition searches for a Composition YAML file with the given composition name.
+func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, string, error) {
+	var foundComposition *v1.Composition
 	var compositionFile string
 
 	err := afero.Walk(filesystem, searchDir, func(path string, info fs.FileInfo, err error) error {
@@ -604,26 +600,15 @@ func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string)
 			return nil
 		}
 
-		// Read and parse the file
-		data, err := afero.ReadFile(filesystem, path)
+		// Try to load as a Composition
+		composition, err := render.LoadComposition(filesystem, path)
 		if err != nil {
-			return nil // Skip files we can't read
+			return nil // Not a valid Composition, skip
 		}
 
-		// Check if this is a Composition with matching name
-		var doc struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return nil // Skip invalid YAML
-		}
-
-		// Check both kind and name match
-		if doc.Kind == "Composition" && doc.Metadata.Name == compositionName {
+		// Check if this is the composition we're looking for
+		if composition.Name == compositionName {
+			foundComposition = composition
 			compositionFile = path
 			return filepath.SkipAll // Found it, stop walking
 		}
@@ -632,12 +617,12 @@ func findCompositionFile(filesystem afero.Fs, searchDir, compositionName string)
 	})
 
 	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return "", err
+		return nil, "", err
 	}
 
-	if compositionFile == "" {
-		return "", errors.Errorf("composition %q not found", compositionName)
+	if foundComposition == nil {
+		return nil, "", errors.Errorf("composition %q not found", compositionName)
 	}
 
-	return compositionFile, nil
+	return foundComposition, compositionFile, nil
 }
