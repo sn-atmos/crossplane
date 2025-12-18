@@ -492,7 +492,11 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 	// Check for optional extra resources
 	extraResourcesPath := filepath.Join(dir, "extra-resources.yaml")
-	if exists, _ := afero.Exists(filesystem, extraResourcesPath); exists {
+	exists, err := afero.Exists(filesystem, extraResourcesPath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot check if extra resources file exists at %q", extraResourcesPath)
+	}
+	if exists {
 		extraResources, err := render.LoadRequiredResources(filesystem, extraResourcesPath)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot load extra resources from %q", extraResourcesPath)
@@ -503,7 +507,11 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 	// Check for optional observed resources
 	observedResourcesPath := filepath.Join(dir, "observed-resources.yaml")
-	if exists, _ := afero.Exists(filesystem, observedResourcesPath); exists {
+	exists, err = afero.Exists(filesystem, observedResourcesPath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot check if observed resources file exists at %q", observedResourcesPath)
+	}
+	if exists {
 		observedResources, err := render.LoadObservedResources(filesystem, observedResourcesPath)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot load observed resources from %q", observedResourcesPath)
@@ -514,7 +522,11 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 	// Check for optional context files
 	contextsDir := filepath.Join(dir, "contexts")
-	if exists, _ := afero.DirExists(filesystem, contextsDir); exists {
+	exists, err = afero.DirExists(filesystem, contextsDir)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot check if contexts directory exists at %q", contextsDir)
+	}
+	if exists {
 		contextFiles, err := afero.ReadDir(filesystem, contextsDir)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
