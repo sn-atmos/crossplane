@@ -19,6 +19,7 @@ package test
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -30,12 +31,12 @@ import (
 // Cmd arguments and flags for alpha render test subcommand.
 type Cmd struct {
 	// Arguments.
-	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." optional:"" type:"path"`
+	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	OutputFile           string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
-	Timeout              time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
-	WriteExpectedOutputs bool          `short:"w" help:"Write/update expected.yaml files instead of comparing." default:"false"`
+	OutputFile           string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
+	Timeout              time.Duration `default:"1m"            help:"How long to run before timing out."`
+	WriteExpectedOutputs bool          `short:"w"               help:"Write/update expected.yaml files instead of comparing." default:"false"`
 
 	fs afero.Fs
 }
@@ -76,14 +77,18 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	defer cancel()
 
 	// Run the test
-	_, err := Test(ctx, log, Inputs{
-		TestDir:          c.TestDir,
-		FileSystem:       c.fs,
-		CompareOutputs:   c.Compare,
-		OutputFile:       c.OutputFile,
+	result, err := Test(ctx, log, Inputs{
+		TestDir:        c.TestDir,
+		FileSystem:     c.fs,
+		CompareOutputs: !c.WriteExpectedOutputs,
+		OutputFile:     c.OutputFile,
 	})
 	if err != nil {
 		return err
+	}
+
+	if !result.Pass {
+		os.Exit(1)
 	}
 
 	return nil

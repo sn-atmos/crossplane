@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gonvenience/bunt"
 	"github.com/gonvenience/ytbx"
 	"github.com/homeport/dyff/pkg/dyff"
 	"github.com/spf13/afero"
@@ -41,19 +40,21 @@ import (
 const (
 	// CompositeFileName is the name of the file containing the composite resource.
 	CompositeFileName = "composite-resource.yaml"
+	FunctionsFileName = "dev-functions.yaml"
 )
 
 // Inputs contains all inputs to the test process.
 type Inputs struct {
-	TestDir          string
-	FileSystem       afero.Fs
-	OutputFile       string // Output filename, defaults to "expected.yaml"
-	CompareOutputs   bool   // If true, compare actual vs. expected outputs using dyff
+	TestDir        string
+	FileSystem     afero.Fs
+	OutputFile     string
+	CompareOutputs bool // If true, compare actual vs. expected outputs using dyff
 }
 
 // Outputs contains test results.
 type Outputs struct {
 	TestDirs []string // Directories containing tests
+	Pass     bool     // Test result
 }
 
 // Test.
@@ -67,7 +68,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}
 
 	log.Info("Found test directories", "count", len(testDirs))
-    log.Debug("Test directory paths", "directories", testDirs)
+	log.Debug("Test directory paths", "directories", testDirs)
 
 	// Process tests sequentially
 	results := make(map[string][]byte)
@@ -79,33 +80,26 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		results[dir] = output
 	}
 
-	// If CompareOutputs is true, compare expected vs. actual
+	testFailed := false
 	if in.CompareOutputs {
 		log.Info("Comparing outputs with dyff")
-		hasErrors := false
 
 		for _, dir := range testDirs {
-			actualOutput := results[dir]
-			expectedPath := filepath.Join(dir, "expected.yaml")
-
-			// Read expected output
-			expectedOutput, err := afero.ReadFile(in.FileSystem, expectedPath)
+			expectedOutput, err := afero.ReadFile(in.FileSystem, filepath.Join(dir, "expected.yaml"))
 			if err != nil {
-				return Outputs{}, errors.Wrapf(err, "cannot read expected output from %q", expectedPath)
+				return Outputs{}, errors.Wrapf(err, "cannot read expected output for test %q", dir)
 			}
 
-			// Parse YAML documents using ytbx
 			expectedDocs, err := ytbx.LoadDocuments(expectedOutput)
 			if err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot parse expected YAML for %q", dir)
 			}
 
-			actualDocs, err := ytbx.LoadDocuments(actualOutput)
+			actualDocs, err := ytbx.LoadDocuments(results[dir])
 			if err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot parse actual YAML for %q", dir)
 			}
 
-			// Compare using dyff library
 			report, err := dyff.CompareInputFiles(
 				ytbx.InputFile{Documents: expectedDocs},
 				ytbx.InputFile{Documents: actualDocs},
@@ -114,37 +108,29 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 				return Outputs{}, errors.Wrapf(err, "cannot compare files for %q", dir)
 			}
 
-			// Check if there are differences
 			if len(report.Diffs) > 0 {
-				log.Debug("Differences found", "directory", dir)
-				fmt.Printf("\n❌ Differences found in %s:\n", dir)
+				testFailed = true
+				log.Debug("Test failed", "directory", dir)
+				fmt.Printf("TEST FAILED %s\n", dir)
 
-				// Create a human-readable report
 				reportWriter := &dyff.HumanReport{
 					Report:     report,
+					Indent:     2,
 					OmitHeader: true,
 				}
 
-				// Write report to stdout with colors
 				var buf bytes.Buffer
 				if err := reportWriter.WriteReport(&buf); err != nil {
 					return Outputs{}, errors.Wrapf(err, "cannot write diff report for %q", dir)
 				}
 
-				// Print with colors if terminal supports it
-				fmt.Print(bunt.Sprint(buf.String()))
-				hasErrors = true
+				// extra diff indent
+				fmt.Println("  " + strings.ReplaceAll(buf.String(), "\n", "\n  "))
 			} else {
-				log.Debug("No differences found", "directory", dir)
-				fmt.Printf("✓ No differences in %s\n", dir)
+				log.Debug("Test passed", "directory", dir)
+				fmt.Printf("TEST PASSED %s\n", dir)
 			}
 		}
-
-		if hasErrors {
-			return Outputs{}, errors.New("test failed: differences found between expected and actual outputs")
-		}
-
-		log.Info("All tests passed")
 	} else {
 		// If not comparing, write the outputs to files
 		for _, dir := range testDirs {
@@ -157,7 +143,10 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		}
 	}
 
-	return Outputs{TestDirs: testDirs}, nil
+	return Outputs{
+		TestDirs: testDirs,
+		Pass:     !testFailed,
+	}, nil
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
@@ -207,10 +196,9 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 	log.Debug("Loaded composition", "file", compositionFilePath)
 
-	// Load functions from dev-functions.yaml
-	functions, err := render.LoadFunctions(filesystem, "dev-functions.yaml")
+	functions, err := render.LoadFunctions(filesystem, FunctionsFileName)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot load functions from dev-functions.yaml")
+		return nil, errors.Wrap(err, "cannot load functions from fucntions file")
 	}
 
 	// Build render inputs
