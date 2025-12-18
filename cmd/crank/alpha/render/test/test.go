@@ -45,10 +45,10 @@ const (
 
 // Inputs contains all inputs to the test process.
 type Inputs struct {
-	TestDir        string
-	FileSystem     afero.Fs
-	OutputFile     string
-	CompareOutputs bool // If true, compare actual vs. expected outputs using dyff
+	TestDir              string
+	FileSystem           afero.Fs
+	OutputFile           string
+	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
 }
 
 // Outputs contains test results.
@@ -81,7 +81,19 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}
 
 	testFailed := false
-	if in.CompareOutputs {
+	// Write expected outputs or compare (default is compare)
+	if in.WriteExpectedOutputs {
+		// Write the outputs to files
+		for _, dir := range testDirs {
+			actualOutput := results[dir]
+			outputPath := filepath.Join(dir, outputFile)
+			if err := afero.WriteFile(in.FileSystem, outputPath, actualOutput, 0o644); err != nil {
+				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
+			}
+			log.Debug("Wrote output", "path", outputPath)
+		}
+	} else {
+		// Compare expected vs. actual (default behavior)
 		log.Info("Comparing outputs with dyff")
 
 		for _, dir := range testDirs {
@@ -131,16 +143,12 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 				fmt.Printf("TEST PASSED %s\n", dir)
 			}
 		}
-	} else {
-		// If not comparing, write the outputs to files
-		for _, dir := range testDirs {
-			actualOutput := results[dir]
-			outputPath := filepath.Join(dir, outputFile)
-			if err := afero.WriteFile(in.FileSystem, outputPath, actualOutput, 0o644); err != nil {
-				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
-			}
-			log.Debug("Wrote output", "path", outputPath)
+
+		if testFailed {
+			return Outputs{}, errors.New("test failed: differences found between expected and actual outputs")
 		}
+
+		log.Info("All tests passed")
 	}
 
 	return Outputs{

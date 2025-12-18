@@ -36,7 +36,7 @@ type Cmd struct {
 	// Flags. Keep them in alphabetical order.
 	OutputFile           string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
 	Timeout              time.Duration `default:"1m"            help:"How long to run before timing out."`
-	WriteExpectedOutputs bool          `short:"w"               help:"Write/update expected.yaml files instead of comparing." default:"false"`
+	WriteExpectedOutputs bool          `default:"false"         help:"Write/update expected.yaml files instead of comparing." short:"w"`
 
 	fs afero.Fs
 }
@@ -78,10 +78,10 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 
 	// Run the test
 	result, err := Test(ctx, log, Inputs{
-		TestDir:        c.TestDir,
-		FileSystem:     c.fs,
-		CompareOutputs: !c.WriteExpectedOutputs,
-		OutputFile:     c.OutputFile,
+		TestDir:              c.TestDir,
+		FileSystem:           c.fs,
+		WriteExpectedOutputs: c.WriteExpectedOutputs,
+		OutputFile:           c.OutputFile,
 	})
 	if err != nil {
 		return err
