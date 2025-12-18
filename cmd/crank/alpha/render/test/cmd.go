@@ -35,8 +35,6 @@ type Cmd struct {
 	// Flags. Keep them in alphabetical order.
 	Compare          bool          `help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files." short:"c"`
 	OutputFile       string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
-	PackageFile      string        `default:"apis/package.yaml"                                                                             help:"Path to package.yaml file for generating dev-functions.yaml."`
-	RestartFunctions bool          `help:"Restart function containers even if they are already running."                                    short:"r"`
 	Timeout          time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
 
 	fs afero.Fs
@@ -54,9 +52,6 @@ Examples:
 
   # Compare actual outputs with expected.yaml files
   crossplane alpha render test --compare
-
-  # Restart function containers before testing
-  crossplane alpha render test --restart-functions
 
   # Test a specific directory
   crossplane alpha render test tests/my-test --compare
@@ -83,8 +78,6 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 		FileSystem:       c.fs,
 		CompareOutputs:   c.Compare,
 		OutputFile:       c.OutputFile,
-		PackageFile:      c.PackageFile,
-		RestartFunctions: c.RestartFunctions,
 	})
 	if err != nil {
 		return err
