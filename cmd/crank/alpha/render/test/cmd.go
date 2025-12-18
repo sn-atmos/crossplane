@@ -30,10 +30,14 @@ import (
 // Cmd arguments and flags for alpha render test subcommand.
 type Cmd struct {
 	// Arguments.
+	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." optional:"" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-
-	Timeout time.Duration `default:"1m" help:"How long to run before timing out."`
+	Compare          bool          `help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files." short:"c"`
+	OutputFile       string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
+	PackageFile      string        `default:"apis/package.yaml"                                                                             help:"Path to package.yaml file for generating dev-functions.yaml."`
+	RestartFunctions bool          `help:"Restart function containers even if they are already running."                                    short:"r"`
+	Timeout          time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
 
 	fs afero.Fs
 }
@@ -41,12 +45,24 @@ type Cmd struct {
 // Help prints out the help for the alpha render op command.
 func (c *Cmd) Help() string {
 	return `
-This command renders XRs and asserts the outputs are as expected.
+This command renders XRs and either generates expected outputs or compares them.
 
 Examples:
 
-  # Run a render test.
+  # Generate/update expected.yaml files for all tests
   crossplane alpha render test
+
+  # Compare actual outputs with expected.yaml files
+  crossplane alpha render test --compare
+
+  # Restart function containers before testing
+  crossplane alpha render test --restart-functions
+
+  # Test a specific directory
+  crossplane alpha render test tests/my-test --compare
+
+  # Generate outputs with a different filename
+  crossplane alpha render test --output-file=snapshot.yaml
 `
 }
 
@@ -62,7 +78,14 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	defer cancel()
 
 	// Run the test
-	_, err := Test(ctx, log, Inputs{})
+	_, err := Test(ctx, log, Inputs{
+		TestDir:          c.TestDir,
+		FileSystem:       c.fs,
+		CompareOutputs:   c.Compare,
+		OutputFile:       c.OutputFile,
+		PackageFile:      c.PackageFile,
+		RestartFunctions: c.RestartFunctions,
+	})
 	if err != nil {
 		return err
 	}
