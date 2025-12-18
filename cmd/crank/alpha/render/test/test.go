@@ -66,13 +66,8 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		return Outputs{}, err
 	}
 
-	// Print to stdout for verification
-	fmt.Printf("Found %d test directories:\n", len(testDirs))
-	for _, dir := range testDirs {
-		fmt.Printf("  - %s\n", dir)
-	}
-
 	log.Info("Found test directories", "count", len(testDirs))
+    log.Debug("Test directory paths", "directories", testDirs)
 
 	// Process tests sequentially
 	results := make(map[string][]byte)
@@ -121,6 +116,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 
 			// Check if there are differences
 			if len(report.Diffs) > 0 {
+				log.Debug("Differences found", "directory", dir)
 				fmt.Printf("\n❌ Differences found in %s:\n", dir)
 
 				// Create a human-readable report
@@ -139,6 +135,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 				fmt.Print(bunt.Sprint(buf.String()))
 				hasErrors = true
 			} else {
+				log.Debug("No differences found", "directory", dir)
 				fmt.Printf("✓ No differences in %s\n", dir)
 			}
 		}
@@ -156,7 +153,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 			if err := afero.WriteFile(in.FileSystem, outputPath, actualOutput, 0o644); err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
 			}
-			fmt.Printf("Wrote output to: %s\n", outputPath)
+			log.Debug("Wrote output", "path", outputPath)
 		}
 	}
 
@@ -184,7 +181,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 
 // processTestDirectory handles the rendering for a single test directory.
 func processTestDirectory(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
-	fmt.Printf("Processing test directory: %s\n", dir)
+	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
 	compositeResource, err := render.LoadCompositeResource(filesystem, compositeResourceFilePath)
@@ -200,7 +197,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	if !found {
 		return nil, errors.Errorf("spec.crossplane.compositionRef.name not found in %q", compositeResourceFilePath)
 	}
-	fmt.Printf("Composition name: %s\n", compositionName)
+	log.Debug("Found composition reference", "name", compositionName)
 
 	// Find and load the composition
 	composition, compositionFilePath, err := findComposition(filesystem, ".", compositionName)
@@ -208,7 +205,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
-	fmt.Printf("Composition file: %s\n", compositionFilePath)
+	log.Debug("Loaded composition", "file", compositionFilePath)
 
 	// Load functions from dev-functions.yaml
 	functions, err := render.LoadFunctions(filesystem, "dev-functions.yaml")
@@ -235,7 +232,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			return nil, errors.Wrapf(err, "cannot load extra resources from %q", extraResourcesPath)
 		}
 		renderInputs.ExtraResources = extraResources
-		fmt.Printf("Found extra resources: %s\n", extraResourcesPath)
+		log.Debug("Loaded extra resources", "path", extraResourcesPath)
 	}
 
 	// Check for optional observed resources
@@ -250,7 +247,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			return nil, errors.Wrapf(err, "cannot load observed resources from %q", observedResourcesPath)
 		}
 		renderInputs.ObservedResources = observedResources
-		fmt.Printf("Found observed resources: %s\n", observedResourcesPath)
+		log.Debug("Loaded observed resources", "path", observedResourcesPath)
 	}
 
 	// Check for optional context files
@@ -285,7 +282,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			// Use filename without extension as context name
 			contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
 			contexts[contextName] = contextData
-			fmt.Printf("Found context: %s from %s\n", contextName, contextFilePath)
+			log.Debug("Loaded context", "name", contextName, "path", contextFilePath)
 		}
 
 		if len(contexts) > 0 {
