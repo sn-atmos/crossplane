@@ -33,9 +33,9 @@ type Cmd struct {
 	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." optional:"" type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	Compare          bool          `help:"Compare actual output with expected.yaml files. If false, generates/updates expected.yaml files." short:"c"`
-	OutputFile       string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
-	Timeout          time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
+	OutputFile           string        `default:"expected.yaml"                                                                                 help:"Name of the output file (used when not comparing)."`
+	Timeout              time.Duration `default:"1m"                                                                                            help:"How long to run before timing out."`
+	WriteExpectedOutputs bool          `short:"w" help:"Write/update expected.yaml files instead of comparing." default:"false"`
 
 	fs afero.Fs
 }
@@ -43,21 +43,24 @@ type Cmd struct {
 // Help prints out the help for the alpha render op command.
 func (c *Cmd) Help() string {
 	return `
-This command renders XRs and either generates expected outputs or compares them.
+Render composite resources (XRs) and assert results.
+
+This command renders XRs and compares them with expected outputs by default.
+Use --write-expected-outputs to generate/update expected.yaml files.
 
 Examples:
 
-  # Generate/update expected.yaml files for all tests
-  crossplane alpha render test
+    # Compare actual outputs with expected.yaml files (default)
+    crossplane alpha render test
 
-  # Compare actual outputs with expected.yaml files
-  crossplane alpha render test --compare
+    # Generate/update expected.yaml files
+    crossplane alpha render test --write-expected-outputs
 
-  # Test a specific directory
-  crossplane alpha render test tests/my-test --compare
+    # Test a specific directory
+    crossplane alpha render test tests/my-test
 
-  # Generate outputs with a different filename
-  crossplane alpha render test --output-file=snapshot.yaml
+    # Generate outputs with a different filename
+    crossplane alpha render test --write-expected-outputs --output-file=snapshot.yaml
 `
 }
 
