@@ -198,7 +198,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 	functions, err := render.LoadFunctions(filesystem, FunctionsFileName)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot load functions from fucntions file")
+		return nil, errors.Wrap(err, "cannot load functions from functions file")
 	}
 
 	// Build render inputs
