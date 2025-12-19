@@ -247,6 +247,54 @@ func extractCompositionName(compositeResource *composite.Unstructured, dir strin
 	return compositionName, nil
 }
 
+// findComposition searches for a Composition by name, among the files in the search dir.
+func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, error) {
+	var foundComposition *v1.Composition
+
+	err := afero.Walk(filesystem, searchDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		// Only check .yaml or .yml files
+		ext := filepath.Ext(path)
+		if ext != ".yaml" && ext != ".yml" {
+			return nil
+		}
+
+		// Try to load as a Composition
+		composition, err := render.LoadComposition(filesystem, path)
+		if err != nil {
+			// Only skip if it's not a composition; other errors should be returned
+			if strings.Contains(err.Error(), "not a composition") {
+				return nil
+			}
+			return err
+		}
+
+		if composition.Name == compositionName {
+			foundComposition = composition
+			return filepath.SkipAll // Found it, stop walking
+		}
+
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
+		return nil, err
+	}
+
+	if foundComposition == nil {
+		return nil, errors.Errorf("composition %q not found", compositionName)
+	}
+
+	return foundComposition, nil
+}
+
 // loadOptionalResources loads optional extra resources, observed resources, and contexts.
 func loadOptionalResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
 	if err := loadExtraResources(filesystem, dir, renderInputs, log); err != nil {
@@ -356,52 +404,4 @@ func marshalOutputs(outputs render.Outputs) ([]byte, error) {
 
 	// Join with yaml document separator
 	return bytes.Join(yamlDocs, []byte("---\n")), nil
-}
-
-// findComposition searches for a Composition by name, among the files in the search dir.
-func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, error) {
-	var foundComposition *v1.Composition
-
-	err := afero.Walk(filesystem, searchDir, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		// Only check .yaml or .yml files
-		ext := filepath.Ext(path)
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-
-		// Try to load as a Composition
-		composition, err := render.LoadComposition(filesystem, path)
-		if err != nil {
-			// Only skip if it's not a composition; other errors should be returned
-			if strings.Contains(err.Error(), "not a composition") {
-				return nil
-			}
-			return err
-		}
-
-		if composition.Name == compositionName {
-			foundComposition = composition
-			return filepath.SkipAll // Found it, stop walking
-		}
-
-		return nil
-	})
-
-	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return nil, err
-	}
-
-	if foundComposition == nil {
-		return nil, errors.Errorf("composition %q not found", compositionName)
-	}
-
-	return foundComposition, nil
 }
