@@ -40,11 +40,13 @@ import (
 )
 
 const (
-	// Test file names within each test folder.
-	CompositeFileName         = "composite-resource.yaml"
-	ExtraResourcesFileName    = "extra-resources.yaml"
+	// CompositeFileName is the name of the file containing the composite resource.
+	CompositeFileName = "composite-resource.yaml"
+	// ExtraResourcesFileName is the name of the file containing extra resources.
+	ExtraResourcesFileName = "extra-resources.yaml"
+	// ObservedResourcesFileName is the name of the file containing observed resources.
 	ObservedResourcesFileName = "observed-resources.yaml"
-
+	// FunctionsFileName is the name of the file containing the function configurations.
 	FunctionsFileName = "dev-functions.yaml"
 )
 
@@ -62,7 +64,7 @@ type Outputs struct {
 	Pass     bool     // Test result
 }
 
-// Test.
+// Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	outputFile := in.OutputFile
 

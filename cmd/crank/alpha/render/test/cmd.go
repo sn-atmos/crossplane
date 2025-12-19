@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package op implements operation rendering using operation functions.
+// Package test implements composite resource rendering and testing.
 package test
 
 import (
@@ -72,7 +72,7 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run alpha render test.
-func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
+func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
