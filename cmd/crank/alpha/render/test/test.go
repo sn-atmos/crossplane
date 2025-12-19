@@ -38,8 +38,11 @@ import (
 )
 
 const (
-	// CompositeFileName is the name of the file containing the composite resource.
-	CompositeFileName = "composite-resource.yaml"
+	// Test file names within each test folder
+	CompositeFileName         = "composite-resource.yaml"
+	ExtraResourcesFileName    = "extra-resources.yaml"
+	ObservedResourcesFileName = "observed-resources.yaml"
+
 	FunctionsFileName = "dev-functions.yaml"
 )
 
@@ -73,7 +76,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := processTestDirectory(ctx, log, in.FileSystem, dir)
+		output, err := renderTest(ctx, log, in.FileSystem, dir)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -176,8 +179,8 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 	return testDirs, err
 }
 
-// processTestDirectory handles the rendering for a single test directory.
-func processTestDirectory(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
+// renderTest renders a single test directory.
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
@@ -186,7 +189,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 		return nil, errors.Wrapf(err, "cannot load CompositeResource from %q", compositeResourceFilePath)
 	}
 
-	// Extract composition name
+	// Extract composition name from XR
 	compositionName, found, err := unstructured.NestedString(compositeResource.Object, "spec", "crossplane", "compositionRef", "name")
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot extract composition name from %q", compositeResourceFilePath)
@@ -196,13 +199,10 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	}
 	log.Debug("Found composition reference", "name", compositionName)
 
-	// Find and load the composition
-	composition, compositionFilePath, err := findComposition(filesystem, ".", compositionName)
+	composition, err := findComposition(filesystem, ".", compositionName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
-
-	log.Debug("Loaded composition", "file", compositionFilePath)
 
 	functions, err := render.LoadFunctions(filesystem, FunctionsFileName)
 	if err != nil {
@@ -214,10 +214,11 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 		CompositeResource: compositeResource,
 		Composition:       composition,
 		Functions:         functions,
+		Context:           make(map[string][]byte),
 	}
 
 	// Check for optional extra resources
-	extraResourcesPath := filepath.Join(dir, "extra-resources.yaml")
+	extraResourcesPath := filepath.Join(dir, ExtraResourcesFileName)
 	exists, err := afero.Exists(filesystem, extraResourcesPath)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot check if extra resources file exists at %q", extraResourcesPath)
@@ -232,7 +233,7 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 	}
 
 	// Check for optional observed resources
-	observedResourcesPath := filepath.Join(dir, "observed-resources.yaml")
+	observedResourcesPath := filepath.Join(dir, ObservedResourcesFileName)
 	exists, err = afero.Exists(filesystem, observedResourcesPath)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot check if observed resources file exists at %q", observedResourcesPath)
@@ -258,14 +259,8 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 			return nil, errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
 		}
 
-		contexts := make(map[string][]byte)
 		for _, fileInfo := range contextFiles {
-			if fileInfo.IsDir() {
-				continue
-			}
-
-			// Only process .json files
-			if filepath.Ext(fileInfo.Name()) != ".json" {
+			if fileInfo.IsDir() || filepath.Ext(fileInfo.Name()) != ".json" {
 				continue
 			}
 
@@ -277,32 +272,24 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 
 			// Use filename without extension as context name
 			contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
-			contexts[contextName] = contextData
+			renderInputs.Context[contextName] = contextData
 			log.Debug("Loaded context", "name", contextName, "path", contextFilePath)
-		}
-
-		if len(contexts) > 0 {
-			renderInputs.Context = contexts
 		}
 	}
 
-	// Run render
 	outputs, err := render.Render(ctx, log, renderInputs)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot render for %q", dir)
 	}
 
-	// Convert outputs to YAML
 	var yamlDocs [][]byte
 
-	// Add the composite resource
 	xrYAML, err := yaml.Marshal(outputs.CompositeResource.Object)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot marshal composite resource to YAML")
 	}
 	yamlDocs = append(yamlDocs, xrYAML)
 
-	// Add all composed resources
 	for _, composed := range outputs.ComposedResources {
 		composedYAML, err := yaml.Marshal(composed.Object)
 		if err != nil {
@@ -311,23 +298,19 @@ func processTestDirectory(ctx context.Context, log logging.Logger, filesystem af
 		yamlDocs = append(yamlDocs, composedYAML)
 	}
 
-	// Join with --- separator
-	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
-
-	return outputBytes, nil
+	// Join with yaml document separator
+	return bytes.Join(yamlDocs, []byte("---\n")), nil
 }
 
-// findComposition searches for a Composition YAML file with the given composition name.
-func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, string, error) {
+// findComposition searches for a Composition by name, among the files in the search dir.
+func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, error) {
 	var foundComposition *v1.Composition
-	var compositionFile string
 
 	err := afero.Walk(filesystem, searchDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip directories
 		if info.IsDir() {
 			return nil
 		}
@@ -343,15 +326,13 @@ func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v
 		if err != nil {
 			// Only skip if it's not a composition; other errors should be returned
 			if strings.Contains(err.Error(), "not a composition") {
-				return nil // Not a Composition, skip
+				return nil
 			}
 			return err
 		}
 
-		// Check if this is the composition we're looking for
 		if composition.Name == compositionName {
 			foundComposition = composition
-			compositionFile = path
 			return filepath.SkipAll // Found it, stop walking
 		}
 
@@ -359,12 +340,12 @@ func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v
 	})
 
 	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return nil, "", err
+		return nil, err
 	}
 
 	if foundComposition == nil {
-		return nil, "", errors.Errorf("composition %q not found", compositionName)
+		return nil, errors.Errorf("composition %q not found", compositionName)
 	}
 
-	return foundComposition, compositionFile, nil
+	return foundComposition, nil
 }
