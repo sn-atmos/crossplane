@@ -33,13 +33,14 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 )
 
 const (
-	// Test file names within each test folder
+	// Test file names within each test folder.
 	CompositeFileName         = "composite-resource.yaml"
 	ExtraResourcesFileName    = "extra-resources.yaml"
 	ObservedResourcesFileName = "observed-resources.yaml"
@@ -184,19 +185,14 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
-	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
-	compositeResource, err := render.LoadCompositeResource(filesystem, compositeResourceFilePath)
+	compositeResource, err := loadCompositeResource(filesystem, dir)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load CompositeResource from %q", compositeResourceFilePath)
+		return nil, err
 	}
 
-	// Extract composition name from XR
-	compositionName, found, err := unstructured.NestedString(compositeResource.Object, "spec", "crossplane", "compositionRef", "name")
+	compositionName, err := extractCompositionName(compositeResource, dir)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot extract composition name from %q", compositeResourceFilePath)
-	}
-	if !found {
-		return nil, errors.Errorf("spec.crossplane.compositionRef.name not found in %q", compositeResourceFilePath)
+		return nil, err
 	}
 	log.Debug("Found composition reference", "name", compositionName)
 
@@ -210,7 +206,6 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrap(err, "cannot load functions from functions file")
 	}
 
-	// Build render inputs
 	renderInputs := render.Inputs{
 		CompositeResource: compositeResource,
 		Composition:       composition,
@@ -218,64 +213,8 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		Context:           make(map[string][]byte),
 	}
 
-	// Check for optional extra resources
-	extraResourcesPath := filepath.Join(dir, ExtraResourcesFileName)
-	exists, err := afero.Exists(filesystem, extraResourcesPath)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot check if extra resources file exists at %q", extraResourcesPath)
-	}
-	if exists {
-		extraResources, err := render.LoadRequiredResources(filesystem, extraResourcesPath)
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot load extra resources from %q", extraResourcesPath)
-		}
-		renderInputs.ExtraResources = extraResources
-		log.Debug("Loaded extra resources", "path", extraResourcesPath)
-	}
-
-	// Check for optional observed resources
-	observedResourcesPath := filepath.Join(dir, ObservedResourcesFileName)
-	exists, err = afero.Exists(filesystem, observedResourcesPath)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot check if observed resources file exists at %q", observedResourcesPath)
-	}
-	if exists {
-		observedResources, err := render.LoadObservedResources(filesystem, observedResourcesPath)
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot load observed resources from %q", observedResourcesPath)
-		}
-		renderInputs.ObservedResources = observedResources
-		log.Debug("Loaded observed resources", "path", observedResourcesPath)
-	}
-
-	// Check for optional context files
-	contextsDir := filepath.Join(dir, "contexts")
-	exists, err = afero.DirExists(filesystem, contextsDir)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot check if contexts directory exists at %q", contextsDir)
-	}
-	if exists {
-		contextFiles, err := afero.ReadDir(filesystem, contextsDir)
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
-		}
-
-		for _, fileInfo := range contextFiles {
-			if fileInfo.IsDir() || filepath.Ext(fileInfo.Name()) != ".json" {
-				continue
-			}
-
-			contextFilePath := filepath.Join(contextsDir, fileInfo.Name())
-			contextData, err := afero.ReadFile(filesystem, contextFilePath)
-			if err != nil {
-				return nil, errors.Wrapf(err, "cannot read context file %q", contextFilePath)
-			}
-
-			// Use filename without extension as context name
-			contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
-			renderInputs.Context[contextName] = contextData
-			log.Debug("Loaded context", "name", contextName, "path", contextFilePath)
-		}
+	if err := loadOptionalResources(filesystem, dir, &renderInputs, log); err != nil {
+		return nil, err
 	}
 
 	outputs, err := render.Render(ctx, log, renderInputs)
@@ -283,7 +222,123 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrapf(err, "cannot render for %q", dir)
 	}
 
-	var yamlDocs [][]byte
+	return marshalOutputs(outputs)
+}
+
+// loadCompositeResource loads the composite resource from the test directory.
+func loadCompositeResource(filesystem afero.Fs, dir string) (*composite.Unstructured, error) {
+	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
+	compositeResource, err := render.LoadCompositeResource(filesystem, compositeResourceFilePath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot load CompositeResource from %q", compositeResourceFilePath)
+	}
+	return compositeResource, nil
+}
+
+// extractCompositionName extracts the composition name from the composite resource.
+func extractCompositionName(compositeResource *composite.Unstructured, dir string) (string, error) {
+	compositionName, found, err := unstructured.NestedString(compositeResource.Object, "spec", "crossplane", "compositionRef", "name")
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot extract composition name from composite resource in %q", dir)
+	}
+	if !found {
+		return "", errors.Errorf("spec.crossplane.compositionRef.name not found in composite resource in %q", dir)
+	}
+	return compositionName, nil
+}
+
+// loadOptionalResources loads optional extra resources, observed resources, and contexts.
+func loadOptionalResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	if err := loadExtraResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
+	if err := loadObservedResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
+	return loadContexts(filesystem, dir, renderInputs, log)
+}
+
+// loadExtraResources loads optional extra resources from extra-resources.yaml.
+func loadExtraResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	extraResourcesPath := filepath.Join(dir, ExtraResourcesFileName)
+	exists, err := afero.Exists(filesystem, extraResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if extra resources file exists at %q", extraResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	extraResources, err := render.LoadRequiredResources(filesystem, extraResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load extra resources from %q", extraResourcesPath)
+	}
+	renderInputs.ExtraResources = extraResources
+	log.Debug("Loaded extra resources", "path", extraResourcesPath)
+	return nil
+}
+
+// loadObservedResources loads optional observed resources from observed-resources.yaml.
+func loadObservedResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	observedResourcesPath := filepath.Join(dir, ObservedResourcesFileName)
+	exists, err := afero.Exists(filesystem, observedResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if observed resources file exists at %q", observedResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	observedResources, err := render.LoadObservedResources(filesystem, observedResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load observed resources from %q", observedResourcesPath)
+	}
+	renderInputs.ObservedResources = observedResources
+	log.Debug("Loaded observed resources", "path", observedResourcesPath)
+	return nil
+}
+
+// loadContexts loads optional context files from the contexts directory.
+func loadContexts(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	contextsDir := filepath.Join(dir, "contexts")
+	exists, err := afero.DirExists(filesystem, contextsDir)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if contexts directory exists at %q", contextsDir)
+	}
+	if !exists {
+		return nil
+	}
+
+	contextFiles, err := afero.ReadDir(filesystem, contextsDir)
+	if err != nil {
+		return errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
+	}
+
+	for _, fileInfo := range contextFiles {
+		if fileInfo.IsDir() || filepath.Ext(fileInfo.Name()) != ".json" {
+			continue
+		}
+
+		contextFilePath := filepath.Join(contextsDir, fileInfo.Name())
+		contextData, err := afero.ReadFile(filesystem, contextFilePath)
+		if err != nil {
+			return errors.Wrapf(err, "cannot read context file %q", contextFilePath)
+		}
+
+		contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
+		renderInputs.Context[contextName] = contextData
+		log.Debug("Loaded context", "name", contextName, "path", contextFilePath)
+	}
+
+	return nil
+}
+
+// marshalOutputs converts render outputs to YAML bytes separated by ---.
+func marshalOutputs(outputs render.Outputs) ([]byte, error) {
+	// Pre-allocate slice with known capacity
+	yamlDocs := make([][]byte, 0, len(outputs.ComposedResources)+1)
 
 	xrYAML, err := yaml.Marshal(outputs.CompositeResource.Object)
 	if err != nil {
