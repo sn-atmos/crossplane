@@ -19,12 +19,12 @@ package test
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 )
 
@@ -88,7 +88,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	}
 
 	if !result.Pass {
-		os.Exit(1)
+		return errors.New("test failed")
 	}
 
 	return nil
