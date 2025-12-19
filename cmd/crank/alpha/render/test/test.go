@@ -66,8 +66,6 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-	outputFile := in.OutputFile
-
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
 	if err != nil {
@@ -93,7 +91,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		// Write the outputs to files
 		for _, dir := range testDirs {
 			actualOutput := results[dir]
-			outputPath := filepath.Join(dir, outputFile)
+			outputPath := filepath.Join(dir, in.OutputFile)
 			if err := afero.WriteFile(in.FileSystem, outputPath, actualOutput, 0o644); err != nil {
 				return Outputs{}, errors.Wrapf(err, "cannot write output to %q", outputPath)
 			}
