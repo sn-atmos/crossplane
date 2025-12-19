@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -126,7 +127,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 			if len(report.Diffs) > 0 {
 				testFailed = true
 				log.Debug("Test failed", "directory", dir)
-				fmt.Printf("TEST FAILED %s\n", dir)
+				_, _ = fmt.Fprintln(os.Stdout, "TEST FAILED", dir)
 
 				reportWriter := &dyff.HumanReport{
 					Report:     report,
@@ -140,10 +141,10 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 				}
 
 				// extra diff indent
-				fmt.Println("  " + strings.ReplaceAll(buf.String(), "\n", "\n  "))
+				_, _ = fmt.Fprintln(os.Stdout, "  "+strings.ReplaceAll(buf.String(), "\n", "\n  "))
 			} else {
 				log.Debug("Test passed", "directory", dir)
-				fmt.Printf("TEST PASSED %s\n", dir)
+				_, _ = fmt.Fprintln(os.Stdout, "TEST PASSED", dir)
 			}
 		}
 
