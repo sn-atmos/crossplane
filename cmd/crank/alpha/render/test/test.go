@@ -72,7 +72,6 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		return Outputs{}, err
 	}
 
-	log.Info("Found test directories", "count", len(testDirs))
 	log.Debug("Test directory paths", "directories", testDirs)
 
 	// Process tests sequentially
