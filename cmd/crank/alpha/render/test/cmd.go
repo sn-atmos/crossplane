@@ -34,10 +34,10 @@ type Cmd struct {
 	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	OutputFile           string        `default:"expected.yaml"     help:"Name of the output file (used when not comparing)."`
-	PackageFile          string        `default:"apis/package.yaml" help:"Path to package.yaml file for generating dev-functions.yaml."`
-	Timeout              time.Duration `default:"1m"                help:"How long to run before timing out."`
-	WriteExpectedOutputs bool          `default:"false"             help:"Write/update expected.yaml files instead of comparing."       short:"w"`
+	OutputFile           string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
+	PackageFile          string        `help:"Path to package.yaml file for resolving function versions."`
+	Timeout              time.Duration `default:"1m"            help:"How long to run before timing out."`
+	WriteExpectedOutputs bool          `default:"false"         help:"Write/update expected.yaml files instead of comparing."       short:"w"`
 
 	fs afero.Fs
 }

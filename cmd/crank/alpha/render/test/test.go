@@ -76,10 +76,14 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-	// Resolve functions from package.yaml
-    resolvedFunctions, err := resolveFunctionsFromPackage(in.FileSystem, in.PackageFile, log)
-    if err != nil {
-        return Outputs{}, errors.Wrap(err, "cannot resolve functions from package.yaml")
+	// Resolve functions from package.yaml if provided
+    var resolvedFunctions []pkgv1.Function
+    if in.PackageFile != "" {
+        var err error
+        resolvedFunctions, err = resolveFunctionsFromPackage(in.FileSystem, in.PackageFile, log)
+        if err != nil {
+            return Outputs{}, errors.Wrap(err, "cannot resolve functions from package")
+        }
     }
 
 	// Find all directories with a composite-resource.yaml file
