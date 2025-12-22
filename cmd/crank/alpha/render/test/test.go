@@ -76,10 +76,11 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-	// Generate dev-functions.yaml from package.yaml
-	if err := generateDevFunctionsFile(in.FileSystem, in.PackageFile, log); err != nil {
-		return Outputs{}, errors.Wrap(err, "cannot generate dev-functions.yaml")
-	}
+	// Resolve functions from package.yaml
+    resolvedFunctions, err := resolveFunctionsFromPackage(in.FileSystem, in.PackageFile, log)
+    if err != nil {
+        return Outputs{}, errors.Wrap(err, "cannot resolve functions from package.yaml")
+    }
 
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
@@ -92,7 +93,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := renderTest(ctx, log, in.FileSystem, dir)
+		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -176,18 +177,18 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}, nil
 }
 
-// generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml.
-func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log logging.Logger) error {
+// resolveFunctionsFromPackage reads apis/package.yaml and resolves function versions.
+func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log logging.Logger) ([]pkgv1.Function, error) {
 	// Read package.yaml
 	packageData, err := afero.ReadFile(filesystem, packageFile)
 	if err != nil {
-		return errors.Wrapf(err, "cannot read package file %q", packageFile)
+		return nil, errors.Wrapf(err, "cannot read package file %q", packageFile)
 	}
 
 	// Parse as Configuration using JSON-compatible YAML unmarshaling
 	var config pkgmetav1.Configuration
 	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
-		return errors.Wrap(err, "cannot unmarshal package.yaml")
+		return nil, errors.Wrap(err, "cannot unmarshal package.yaml")
 	}
 
 	// Extract functions from dependsOn
@@ -197,13 +198,13 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 			// Find the newest version within the constraints specified in the package.yaml file
 			packageWithVersion, err := resolvePackageVersion(*dep.Package, dep.Version)
 			if err != nil {
-				return errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
+				return nil, errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
 			}
 
 			// Parse package repository to get DNS-safe name
             repo, err := name.NewRepository(*dep.Package)
             if err != nil {
-                return errors.Wrapf(err, "invalid package repository: %s", *dep.Package)
+                return nil, errors.Wrapf(err, "invalid package repository: %s", *dep.Package)
             }
             functionName := xpkg.ToDNSLabel(repo.RepositoryStr())
 
@@ -230,29 +231,11 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 	}
 
 	if len(functions) == 0 {
-		return errors.New("no functions found in package.yaml")
+		return nil, errors.New("no functions found in package.yaml")
 	}
 
-	// Marshal functions to YAML
-	yamlDocs := make([][]byte, 0, len(functions))
-	for _, fn := range functions {
-		fnYAML, err := k8syaml.Marshal(fn)
-		if err != nil {
-			return errors.Wrap(err, "cannot marshal function to YAML")
-		}
-		yamlDocs = append(yamlDocs, fnYAML)
-	}
-
-	// Join with --- separator, prepending --- to the start
-	outputBytes := append([]byte("---\n"), bytes.Join(yamlDocs, []byte("---\n"))...)
-
-	// Write to dev-functions.yaml
-	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0o644); err != nil {
-		return errors.Wrap(err, "cannot write dev-functions.yaml")
-	}
-
-	log.Debug("Generated dev-functions.yaml", "functionCount", len(functions))
-	return nil
+	log.Debug("Resolved functions from package", "functionCount", len(functions))
+    return functions, nil
 }
 
 // resolvePackageVersion lists available tags and finds the newest version within the constraints of the package.yaml file.
@@ -330,7 +313,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -349,10 +332,23 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
-	functions, err := render.LoadFunctions(filesystem, FunctionsFileName)
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot load functions from functions file")
-	}
+	// Load functions from file if it exists, otherwise use resolved functions
+    var functions []pkgv1.Function
+    functionFileExists, err := afero.Exists(filesystem, FunctionsFileName)
+    if err != nil {
+        return nil, errors.Wrapf(err, "cannot check if functions file exists")
+    }
+
+    if functionFileExists {
+        functions, err = render.LoadFunctions(filesystem, FunctionsFileName)
+        if err != nil {
+            return nil, errors.Wrap(err, "cannot load functions from functions file")
+        }
+        log.Debug("Loaded functions from file", "path", FunctionsFileName)
+    } else {
+        functions = resolvedFunctions
+        log.Debug("Using resolved functions from package.yaml")
+    }
 
 	renderInputs := render.Inputs{
 		CompositeResource: compositeResource,
