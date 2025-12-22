@@ -282,19 +282,14 @@ func resolvePackageVersion(packageURL, versionConstraint string) (string, error)
 	// Sort versions in ascending order using semver.Collection
 	sort.Sort(semver.Collection(versions))
 
-	// Find the highest version that satisfies the constraint
-	var bestVersion *semver.Version
-	for _, v := range versions {
-		if constraint.Check(v) {
-			bestVersion = v
-		}
-	}
+	// Iterate in reverse order to find the highest version that satisfies the constraint
+    for i := len(versions) - 1; i >= 0; i-- {
+        if constraint.Check(versions[i]) {
+            return fmt.Sprintf("%s:v%s", packageURL, versions[i].String()), nil
+        }
+    }
 
-	if bestVersion == nil {
-		return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
-	}
-
-	return fmt.Sprintf("%s:v%s", packageURL, bestVersion.String()), nil
+	return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
