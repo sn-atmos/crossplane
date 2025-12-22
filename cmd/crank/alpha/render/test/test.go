@@ -43,6 +43,7 @@ import (
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
 	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
 )
 
 const (
@@ -184,8 +185,8 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 	// Parse as Configuration using JSON-compatible YAML unmarshaling
 	var config pkgmetav1.Configuration
 	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
-        return errors.Wrap(err, "cannot unmarshal package.yaml")
-    }
+		return errors.Wrap(err, "cannot unmarshal package.yaml")
+	}
 
 	// Extract functions from dependsOn
 	var functionDocs []map[string]any
@@ -197,8 +198,12 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 				return errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
 			}
 
-			// Extract function name from package URL (without version)
-			functionName := getFunctionName(*dep.Package)
+			// Parse package repository to get DNS-safe name
+            repo, err := name.NewRepository(*dep.Package)
+            if err != nil {
+                return errors.Wrapf(err, "invalid package repository: %s", *dep.Package)
+            }
+            functionName := xpkg.ToDNSLabel(repo.RepositoryStr())
 
 			functionDoc := map[string]any{
 				"apiVersion": "pkg.crossplane.io/v1beta1",
@@ -297,28 +302,6 @@ func resolvePackageVersion(packageURL, versionConstraint string) (string, error)
 	}
 
 	return fmt.Sprintf("%s:v%s", packageURL, bestVersion.String()), nil
-}
-
-// getFunctionName extracts a function name from a package URL
-// e.g., "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform" -> "crossplane-contrib-function-patch-and-transform".
-func getFunctionName(packageURL string) string {
-	// Remove version tag if present (everything after :)
-	if idx := strings.Index(packageURL, ":"); idx != -1 {
-		packageURL = packageURL[:idx]
-	}
-
-	// Split by /
-	segments := strings.Split(packageURL, "/")
-
-	if len(segments) >= 2 {
-		// Get last two segments: org/function-name
-		org := segments[len(segments)-2]
-		funcName := segments[len(segments)-1]
-
-		return fmt.Sprintf("%s-%s", org, funcName)
-	}
-
-	return packageURL
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
