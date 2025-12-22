@@ -34,12 +34,14 @@ import (
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 )
 
@@ -179,33 +181,24 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 		return errors.Wrapf(err, "cannot read package file %q", packageFile)
 	}
 
-	// Parse as raw YAML first to inspect structure
-	var raw struct {
-		Spec struct {
-			DependsOn []struct {
-				Kind    string `yaml:"kind"`
-				Package string `yaml:"package"`
-				Version string `yaml:"version"`
-			} `yaml:"dependsOn"`
-		} `yaml:"spec"`
-	}
-
-	if err := yaml.Unmarshal(packageData, &raw); err != nil {
-		return errors.Wrap(err, "cannot unmarshal package.yaml")
-	}
+	// Parse as Configuration using JSON-compatible YAML unmarshaling
+	var config pkgmetav1.Configuration
+	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
+        return errors.Wrap(err, "cannot unmarshal package.yaml")
+    }
 
 	// Extract functions from dependsOn
 	var functionDocs []map[string]any
-	for _, dep := range raw.Spec.DependsOn {
-		if dep.Kind == "Function" {
+	for _, dep := range config.Spec.DependsOn {
+		if dep.Kind != nil && *dep.Kind == "Function" && dep.Package != nil {
 			// Find the newest version within the constraints specified in the package.yaml file
-			packageWithVersion, err := resolvePackageVersion(dep.Package, dep.Version)
+			packageWithVersion, err := resolvePackageVersion(*dep.Package, dep.Version)
 			if err != nil {
-				return errors.Wrapf(err, "cannot resolve version for %s", dep.Package)
+				return errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
 			}
 
 			// Extract function name from package URL (without version)
-			functionName := getFunctionName(dep.Package)
+			functionName := getFunctionName(*dep.Package)
 
 			functionDoc := map[string]any{
 				"apiVersion": "pkg.crossplane.io/v1beta1",
