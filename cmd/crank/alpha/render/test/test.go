@@ -34,6 +34,7 @@ import (
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -41,6 +42,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
 	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
 	"github.com/crossplane/crossplane/v2/internal/xpkg"
@@ -189,7 +191,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 	}
 
 	// Extract functions from dependsOn
-	var functionDocs []map[string]any
+	functions := make([]pkgv1.Function, 0, len(config.Spec.DependsOn))
 	for _, dep := range config.Spec.DependsOn {
 		if dep.Kind != nil && *dep.Kind == "Function" && dep.Package != nil {
 			// Find the newest version within the constraints specified in the package.yaml file
@@ -205,32 +207,36 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
             }
             functionName := xpkg.ToDNSLabel(repo.RepositoryStr())
 
-			functionDoc := map[string]any{
-				"apiVersion": "pkg.crossplane.io/v1beta1",
-				"kind":       "Function",
-				"metadata": map[string]any{
-					"name": functionName,
-					"annotations": map[string]any{
-						"render.crossplane.io/runtime":                    "Development",
-						"render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
-					},
-				},
-				"spec": map[string]any{
-					"package": packageWithVersion,
-				},
-			}
-			functionDocs = append(functionDocs, functionDoc)
+			function := pkgv1.Function{
+                TypeMeta: metav1.TypeMeta{
+                    APIVersion: "pkg.crossplane.io/v1beta1",
+                    Kind:       "Function",
+                },
+                ObjectMeta: metav1.ObjectMeta{
+                    Name: functionName,
+                    Annotations: map[string]string{
+                        "render.crossplane.io/runtime":                    "Development",
+                        "render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
+                    },
+                },
+                Spec: pkgv1.FunctionSpec{
+                    PackageSpec: pkgv1.PackageSpec{
+                        Package: packageWithVersion,
+                    },
+                },
+            }
+            functions = append(functions, function)
 		}
 	}
 
-	if len(functionDocs) == 0 {
+	if len(functions) == 0 {
 		return errors.New("no functions found in package.yaml")
 	}
 
 	// Marshal functions to YAML
-	yamlDocs := make([][]byte, 0, len(functionDocs))
-	for _, fn := range functionDocs {
-		fnYAML, err := yaml.Marshal(fn)
+	yamlDocs := make([][]byte, 0, len(functions))
+	for _, fn := range functions {
+		fnYAML, err := k8syaml.Marshal(fn)
 		if err != nil {
 			return errors.Wrap(err, "cannot marshal function to YAML")
 		}
@@ -245,7 +251,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 		return errors.Wrap(err, "cannot write dev-functions.yaml")
 	}
 
-	log.Debug("Generated dev-functions.yaml", "functionCount", len(functionDocs))
+	log.Debug("Generated dev-functions.yaml", "functionCount", len(functions))
 	return nil
 }
 
