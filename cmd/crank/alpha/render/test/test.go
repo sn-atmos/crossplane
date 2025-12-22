@@ -23,9 +23,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/gonvenience/ytbx"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/homeport/dyff/pkg/dyff"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -67,9 +71,8 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-
 	// Generate dev-functions.yaml from package.yaml
-	if err := generateDevFunctionsFile(in.FileSystem, in.PackageFile); err != nil {
+	if err := generateDevFunctionsFile(in.FileSystem, in.PackageFile, log); err != nil {
 		return Outputs{}, errors.Wrap(err, "cannot generate dev-functions.yaml")
 	}
 
@@ -169,7 +172,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 }
 
 // generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml.
-func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
+func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log logging.Logger) error {
 	// Read package.yaml
 	packageData, err := afero.ReadFile(filesystem, packageFile)
 	if err != nil {
@@ -195,27 +198,10 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	var functionDocs []map[string]any
 	for _, dep := range raw.Spec.DependsOn {
 		if dep.Kind == "Function" {
-			// Build full package URL with version
-			packageWithVersion := dep.Package
-			if dep.Version != "" {
-				// Extract the first version from constraint like ">=v0.9.1, <v1.0.0"
-				versionParts := strings.Split(dep.Version, ",")
-				if len(versionParts) > 0 {
-					// Get the first part and extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
-					firstPart := strings.TrimSpace(versionParts[0])
-
-					// Verify the first constraint starts with '>='
-					if !strings.HasPrefix(firstPart, ">=") {
-						return errors.Errorf("invalid version constraint for %s: expected first constraint to start with '>=' but got %q", dep.Package, firstPart)
-					}
-
-					// Extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
-					version := strings.TrimPrefix(firstPart, ">=")
-					version = strings.TrimSpace(version)
-					if version != "" {
-						packageWithVersion = fmt.Sprintf("%s:%s", dep.Package, version)
-					}
-				}
+			// Resolve the best matching version using existing Crossplane logic
+			packageWithVersion, err := resolvePackageVersion(dep.Package, dep.Version)
+			if err != nil {
+				return errors.Wrapf(err, "cannot resolve version for %s", dep.Package)
 			}
 
 			// Extract function name from package URL (without version)
@@ -244,7 +230,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 	}
 
 	// Marshal functions to YAML
-	var yamlDocs [][]byte
+	yamlDocs := make([][]byte, 0, len(functionDocs))
 	for _, fn := range functionDocs {
 		fnYAML, err := yaml.Marshal(fn)
 		if err != nil {
@@ -253,16 +239,71 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
 		yamlDocs = append(yamlDocs, fnYAML)
 	}
 
-	// Join with --- separator
-	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
+	// Join with --- separator, prepending --- to the start
+	outputBytes := append([]byte("---\n"), bytes.Join(yamlDocs, []byte("---\n"))...)
 
 	// Write to dev-functions.yaml
 	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0o644); err != nil {
 		return errors.Wrap(err, "cannot write dev-functions.yaml")
 	}
 
-	fmt.Printf("Generated dev-functions.yaml with %d function(s)\n", len(functionDocs))
+	log.Debug("Generated dev-functions.yaml", "functionCount", len(functionDocs))
 	return nil
+}
+
+// resolvePackageVersion lists available tags and finds the newest version within the constraints of the package.yaml file.
+// This logic is adapted from internal/controller/pkg/resolver/reconciler.go.
+func resolvePackageVersion(packageURL, versionConstraint string) (string, error) {
+	// Parse the repository reference
+	repo, err := name.NewRepository(packageURL)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid package URL: %s", packageURL)
+	}
+
+	// List all tags from the registry
+	tags, err := remote.List(repo)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot list tags for %s", packageURL)
+	}
+
+	// Parse version constraint (e.g., ">=v0.9.1, <v1.0.0" or ">=v0.9.1")
+	constraint, err := semver.NewConstraint(versionConstraint)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid version constraint: %s", versionConstraint)
+	}
+
+	// Convert tags to semver versions and filter by constraint
+	versions := []*semver.Version{}
+	for _, tag := range tags {
+		version, err := semver.NewVersion(tag)
+		if err != nil {
+			// Skip non-semver tags
+			continue
+		}
+
+		versions = append(versions, version)
+	}
+
+	if len(versions) == 0 {
+		return "", errors.Errorf("no valid semantic versions found for %s", packageURL)
+	}
+
+	// Sort versions in ascending order using semver.Collection
+	sort.Sort(semver.Collection(versions))
+
+	// Find the highest version that satisfies the constraint
+	var bestVersion *semver.Version
+	for _, v := range versions {
+		if constraint.Check(v) {
+			bestVersion = v
+		}
+	}
+
+	if bestVersion == nil {
+		return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
+	}
+
+	return fmt.Sprintf("%s:v%s", packageURL, bestVersion.String()), nil
 }
 
 // getFunctionName extracts a function name from a package URL
