@@ -198,7 +198,7 @@ func generateDevFunctionsFile(filesystem afero.Fs, packageFile string, log loggi
 	var functionDocs []map[string]any
 	for _, dep := range raw.Spec.DependsOn {
 		if dep.Kind == "Function" {
-			// Resolve the best matching version using existing Crossplane logic
+			// Find the newest version within the constraints specified in the package.yaml file
 			packageWithVersion, err := resolvePackageVersion(dep.Package, dep.Version)
 			if err != nil {
 				return errors.Wrapf(err, "cannot resolve version for %s", dep.Package)
