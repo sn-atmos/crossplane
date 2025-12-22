@@ -55,6 +55,7 @@ type Inputs struct {
 	TestDir              string
 	FileSystem           afero.Fs
 	OutputFile           string
+	PackageFile          string
 	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
 }
 
@@ -66,6 +67,12 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
+
+	// Generate dev-functions.yaml from package.yaml
+	if err := generateDevFunctionsFile(in.FileSystem, in.PackageFile); err != nil {
+		return Outputs{}, errors.Wrap(err, "cannot generate dev-functions.yaml")
+	}
+
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
 	if err != nil {
@@ -159,6 +166,125 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		TestDirs: testDirs,
 		Pass:     !testFailed,
 	}, nil
+}
+
+// generateDevFunctionsFile reads apis/package.yaml and generates dev-functions.yaml.
+func generateDevFunctionsFile(filesystem afero.Fs, packageFile string) error {
+	// Read package.yaml
+	packageData, err := afero.ReadFile(filesystem, packageFile)
+	if err != nil {
+		return errors.Wrapf(err, "cannot read package file %q", packageFile)
+	}
+
+	// Parse as raw YAML first to inspect structure
+	var raw struct {
+		Spec struct {
+			DependsOn []struct {
+				Kind    string `yaml:"kind"`
+				Package string `yaml:"package"`
+				Version string `yaml:"version"`
+			} `yaml:"dependsOn"`
+		} `yaml:"spec"`
+	}
+
+	if err := yaml.Unmarshal(packageData, &raw); err != nil {
+		return errors.Wrap(err, "cannot unmarshal package.yaml")
+	}
+
+	// Extract functions from dependsOn
+	var functionDocs []map[string]any
+	for _, dep := range raw.Spec.DependsOn {
+		if dep.Kind == "Function" {
+			// Build full package URL with version
+			packageWithVersion := dep.Package
+			if dep.Version != "" {
+				// Extract the first version from constraint like ">=v0.9.1, <v1.0.0"
+				versionParts := strings.Split(dep.Version, ",")
+				if len(versionParts) > 0 {
+					// Get the first part and extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+					firstPart := strings.TrimSpace(versionParts[0])
+
+					// Verify the first constraint starts with '>='
+					if !strings.HasPrefix(firstPart, ">=") {
+						return errors.Errorf("invalid version constraint for %s: expected first constraint to start with '>=' but got %q", dep.Package, firstPart)
+					}
+
+					// Extract the version (e.g., ">=v0.9.1" -> "v0.9.1")
+					version := strings.TrimPrefix(firstPart, ">=")
+					version = strings.TrimSpace(version)
+					if version != "" {
+						packageWithVersion = fmt.Sprintf("%s:%s", dep.Package, version)
+					}
+				}
+			}
+
+			// Extract function name from package URL (without version)
+			functionName := getFunctionName(dep.Package)
+
+			functionDoc := map[string]any{
+				"apiVersion": "pkg.crossplane.io/v1beta1",
+				"kind":       "Function",
+				"metadata": map[string]any{
+					"name": functionName,
+					"annotations": map[string]any{
+						"render.crossplane.io/runtime":                    "Development",
+						"render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
+					},
+				},
+				"spec": map[string]any{
+					"package": packageWithVersion,
+				},
+			}
+			functionDocs = append(functionDocs, functionDoc)
+		}
+	}
+
+	if len(functionDocs) == 0 {
+		return errors.New("no functions found in package.yaml")
+	}
+
+	// Marshal functions to YAML
+	var yamlDocs [][]byte
+	for _, fn := range functionDocs {
+		fnYAML, err := yaml.Marshal(fn)
+		if err != nil {
+			return errors.Wrap(err, "cannot marshal function to YAML")
+		}
+		yamlDocs = append(yamlDocs, fnYAML)
+	}
+
+	// Join with --- separator
+	outputBytes := bytes.Join(yamlDocs, []byte("\n---\n"))
+
+	// Write to dev-functions.yaml
+	if err := afero.WriteFile(filesystem, "dev-functions.yaml", outputBytes, 0o644); err != nil {
+		return errors.Wrap(err, "cannot write dev-functions.yaml")
+	}
+
+	fmt.Printf("Generated dev-functions.yaml with %d function(s)\n", len(functionDocs))
+	return nil
+}
+
+// getFunctionName extracts a function name from a package URL
+// e.g., "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform" -> "crossplane-contrib-function-patch-and-transform".
+func getFunctionName(packageURL string) string {
+	// Remove version tag if present (everything after :)
+	if idx := strings.Index(packageURL, ":"); idx != -1 {
+		packageURL = packageURL[:idx]
+	}
+
+	// Split by /
+	segments := strings.Split(packageURL, "/")
+
+	if len(segments) >= 2 {
+		// Get last two segments: org/function-name
+		org := segments[len(segments)-2]
+		funcName := segments[len(segments)-1]
+
+		return fmt.Sprintf("%s-%s", org, funcName)
+	}
+
+	return packageURL
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
