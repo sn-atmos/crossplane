@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	typesimage "github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -51,6 +52,10 @@ const (
 	// used to run the Function. By default render assumes the Function package
 	// (i.e. spec.package) can be used to run the Function.
 	AnnotationKeyRuntimeDockerImage = "render.crossplane.io/runtime-docker-image"
+
+	// AnnotationKeyRuntimeDockerNetwork specifies which Docker network
+    // the Function container should connect to. Defaults to "devnet".
+    AnnotationKeyRuntimeDockerNetwork = "render.crossplane.io/runtime-docker-network"
 
 	// AnnotationKeyRuntimeNamedContainer sets the Docker container name that will
 	// be used for the container. it will also reuse the same container as long as
@@ -146,6 +151,9 @@ type RuntimeDocker struct {
 	// If empty, it defaults to the published HostIP from Docker inspect.
 	// When published on 0.0.0.0, set this explicitly (e.g. the remote Docker host).
 	Target string
+
+	// Network specifies the Docker network to connect the container to.
+    Network string
 }
 
 // GetDockerPullPolicy extracts PullPolicy configuration from the supplied
@@ -196,6 +204,7 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 		Keychain:    authn.DefaultKeychain,
 		log:         log,
 		BindAddress: "127.0.0.1", // Default to localhost for security
+		Network:     "bridge", // Start with bridge as default
 	}
 
 	if i := fn.GetAnnotations()[AnnotationKeyRuntimeDockerImage]; i != "" {
@@ -226,6 +235,12 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 		r.Target = i
 	}
 
+	// Read network annotation - this should override the default
+    if networkName := fn.GetAnnotations()[AnnotationKeyRuntimeDockerNetwork]; networkName != "" {
+        r.Network = networkName
+        r.log.Debug("Using network from annotation", "network", networkName)
+    }
+
 	return r, nil
 }
 
@@ -248,7 +263,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 }
 
 func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client) (string, error) {
-	r.log.Debug("Starting Docker container runtime setup", "image", r.Image)
+	r.log.Debug("Starting Docker container runtime setup", "image", r.Image, "network", r.Network)
 
 	// Let Docker automatically allocate an available port on the bind address.
 	// This avoids race conditions and works reliably with Docker daemons.
@@ -260,14 +275,24 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		ExposedPorts: nat.PortSet{port: struct{}{}},
 		Env:          r.Env,
 	}
-	hcfg := &container.HostConfig{
-		PortBindings: nat.PortMap{
-			port: []nat.PortBinding{{
-				HostIP:   r.BindAddress,
-				HostPort: "0", // "0" => engine allocates an ephemeral port
-			}},
-		},
-	}
+	
+		// Configure host config - only bind ports if using bridge network
+	hcfg := &container.HostConfig{}
+	if r.Network == "bridge" || r.Network == "" {
+        hcfg.PortBindings = nat.PortMap{
+            port: []nat.PortBinding{{
+                HostIP:   r.BindAddress,
+                HostPort: "0",
+            }},
+        }
+    }
+
+	// Configure network connection
+    ncfg := &network.NetworkingConfig{
+        EndpointsConfig: map[string]*network.EndpointSettings{
+            r.Network: {},
+        },
+    }
 
 	options, err := r.getPullOptions()
 	if err != nil {
@@ -285,9 +310,9 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		}
 	}
 
-	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name)
+	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name, "network", r.Network)
 
-	rsp, err := cli.ContainerCreate(ctx, cfg, hcfg, nil, nil, r.Name)
+	rsp, err := cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
 	if err != nil {
 		if !errdefs.IsNotFound(err) || r.PullPolicy == AnnotationValueRuntimeDockerPullPolicyNever {
 			return "", errors.Wrap(err, "cannot create Docker container")
@@ -301,7 +326,7 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 			return "", errors.Wrapf(err, "cannot pull Docker image %q", r.Image)
 		}
 
-		rsp, err = cli.ContainerCreate(ctx, cfg, hcfg, nil, nil, r.Name)
+		rsp, err = cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
 		if err != nil {
 			return "", errors.Wrap(err, "cannot create Docker container")
 		}
@@ -323,11 +348,22 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		return "", errors.Wrap(err, "cannot inspect Docker container")
 	}
 
-	// Look up the specific function port instead of taking the first one
-	p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
-	if len(inspect.NetworkSettings.Ports[p]) == 0 {
-		return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
-	}
+	// If using a custom network (not bridge), connect directly via container name and internal port
+    if r.Network != "bridge" && r.Network != "" {
+        if r.Name == "" {
+            return "", errors.New("container name is required when using custom Docker network")
+        }
+        // Use container name as hostname within the Docker network
+        address := net.JoinHostPort(r.Name, fmt.Sprintf("%d", FunctionPort))
+        r.log.Debug("Using container network address", "address", address, "network", r.Network)
+        return address, nil
+    }
+
+	// For bridge network, use port binding
+    p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
+    if len(inspect.NetworkSettings.Ports[p]) == 0 {
+        return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
+    }
 
 	binding := inspect.NetworkSettings.Ports[p][0]
 	host := r.Target
