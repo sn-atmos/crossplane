@@ -23,20 +23,29 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/gonvenience/ytbx"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/homeport/dyff/pkg/dyff"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8syaml "sigs.k8s.io/yaml"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
 	"github.com/crossplane/crossplane/v2/cmd/crank/render"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
 )
 
 const (
@@ -55,6 +64,8 @@ type Inputs struct {
 	TestDir              string
 	FileSystem           afero.Fs
 	OutputFile           string
+	PackageFile          string
+	FunctionsFile        string
 	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
 }
 
@@ -66,6 +77,16 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
+	// Resolve functions from package.yaml if provided
+    var resolvedFunctions []pkgv1.Function
+    if in.PackageFile != "" {
+        var err error
+        resolvedFunctions, err = resolveFunctionsFromPackage(in.FileSystem, in.PackageFile, log)
+        if err != nil {
+            return Outputs{}, errors.Wrap(err, "cannot resolve functions from package")
+        }
+    }
+
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
 	if err != nil {
@@ -77,7 +98,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := renderTest(ctx, log, in.FileSystem, dir)
+		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions, in.FunctionsFile)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -161,6 +182,141 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}, nil
 }
 
+// resolveFunctionsFromPackage reads apis/package.yaml and resolves function versions.
+func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log logging.Logger) ([]pkgv1.Function, error) {
+	// Read package.yaml
+	packageData, err := afero.ReadFile(filesystem, packageFile)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot read package file %q", packageFile)
+	}
+
+	// Parse as Configuration using JSON-compatible YAML unmarshaling
+	var config pkgmetav1.Configuration
+	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
+		return nil, errors.Wrap(err, "cannot unmarshal package.yaml")
+	}
+
+	// Extract functions from dependsOn
+	functions := make([]pkgv1.Function, 0, len(config.Spec.DependsOn))
+	for _, dep := range config.Spec.DependsOn {
+		if dep.Kind != nil && *dep.Kind == "Function" && dep.Package != nil {
+			// Find the newest version within the constraints specified in the package.yaml file
+			packageWithVersion, err := resolvePackageVersion(*dep.Package, dep.Version)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
+			}
+
+			// Parse package repository to get DNS-safe name
+            repo, err := name.NewRepository(*dep.Package)
+            if err != nil {
+                return nil, errors.Wrapf(err, "invalid package repository: %s", *dep.Package)
+            }
+            functionName := xpkg.ToDNSLabel(repo.RepositoryStr())
+
+			function := pkgv1.Function{
+                TypeMeta: metav1.TypeMeta{
+                    APIVersion: "pkg.crossplane.io/v1beta1",
+                    Kind:       "Function",
+                },
+                ObjectMeta: metav1.ObjectMeta{
+                    Name: functionName,
+					Annotations: map[string]string{
+						"render.crossplane.io/runtime-docker-name": functionName,
+					},
+                },
+                Spec: pkgv1.FunctionSpec{
+                    PackageSpec: pkgv1.PackageSpec{
+                        Package: packageWithVersion,
+                    },
+                },
+            }
+            functions = append(functions, function)
+		}
+	}
+
+	if len(functions) == 0 {
+		return nil, errors.New("no functions found in package.yaml")
+	}
+
+	log.Debug("Resolved functions from package", "functionCount", len(functions))
+    return functions, nil
+}
+
+// resolvePackageVersion lists available tags and finds the newest version within the constraints of the package.yaml file.
+// This logic is adapted from internal/controller/pkg/resolver/reconciler.go.
+func resolvePackageVersion(packageURL, versionConstraint string) (string, error) {
+	// Parse the repository reference
+	repo, err := name.NewRepository(packageURL)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid package URL: %s", packageURL)
+	}
+
+	// List all tags from the registry
+	tags, err := remote.List(repo)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot list tags for %s", packageURL)
+	}
+
+	// Parse version constraint (e.g., ">=v0.9.1, <v1.0.0" or ">=v0.9.1")
+	constraint, err := semver.NewConstraint(versionConstraint)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid version constraint: %s", versionConstraint)
+	}
+
+	// Convert tags to semver versions and filter by constraint
+	versions := []*semver.Version{}
+	for _, tag := range tags {
+		version, err := semver.NewVersion(tag)
+		if err != nil {
+			// Skip non-semver tags
+			continue
+		}
+
+		versions = append(versions, version)
+	}
+
+	if len(versions) == 0 {
+		return "", errors.Errorf("no valid semantic versions found for %s", packageURL)
+	}
+
+	// Sort versions in ascending order using semver.Collection
+	sort.Sort(semver.Collection(versions))
+
+	// Iterate in reverse order to find the highest version that satisfies the constraint
+    for i := len(versions) - 1; i >= 0; i-- {
+        if constraint.Check(versions[i]) {
+            return fmt.Sprintf("%s:v%s", packageURL, versions[i].String()), nil
+        }
+    }
+
+	return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
+}
+
+// mergeFunctions merges package functions with file functions, with file functions taking precedence.
+func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
+    // Create a map of file functions by name for quick lookup
+    fileMap := make(map[string]pkgv1.Function, len(fileFunctions))
+    for _, fn := range fileFunctions {
+        fileMap[fn.Name] = fn
+    }
+
+    // Start with file functions
+    merged := make([]pkgv1.Function, 0, len(packageFunctions)+len(fileFunctions))
+    merged = append(merged, fileFunctions...)
+
+    // Add package functions that aren't overridden by file functions
+    for _, fn := range packageFunctions {
+        if _, exists := fileMap[fn.Name]; !exists {
+            merged = append(merged, fn)
+        } else {
+            log.Debug("Function from package overridden by functions file", "name", fn.Name)
+        }
+    }
+
+    log.Debug("Merged functions", "totalCount", len(merged), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions)-len(fileMap)+len(fileFunctions))
+    return merged
+}
+
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
 func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) {
 	var testDirs []string
@@ -181,7 +337,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -200,10 +356,39 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
-	functions, err := render.LoadFunctions(filesystem, FunctionsFileName)
-	if err != nil {
-		return nil, errors.Wrap(err, "cannot load functions from functions file")
-	}
+	// Determine which functions file to use
+    if functionsFile == "" {
+        functionsFile = FunctionsFileName
+    }
+
+	// Load functions from file if it exists
+    var fileFunctions []pkgv1.Function
+    functionFileExists, err := afero.Exists(filesystem, functionsFile)
+    if err != nil {
+        return nil, errors.Wrapf(err, "cannot check if functions file exists")
+    }
+
+    if functionFileExists {
+        fileFunctions, err = render.LoadFunctions(filesystem, functionsFile)
+        if err != nil {
+            return nil, errors.Wrap(err, "cannot load functions from functions file")
+        }
+        log.Debug("Loaded functions from file", "path", functionsFile, "count", len(fileFunctions))
+    }
+
+	// Merge functions: file functions take precedence over package functions
+    var functions []pkgv1.Function
+    if len(resolvedFunctions) > 0 && len(fileFunctions) > 0 {
+        functions = mergeFunctions(resolvedFunctions, fileFunctions, log)
+    } else if len(fileFunctions) > 0 {
+        functions = fileFunctions
+        log.Debug("Using functions from file only")
+    } else if len(resolvedFunctions) > 0 {
+        functions = resolvedFunctions
+        log.Debug("Using resolved functions from package.yaml only")
+    } else {
+        return nil, errors.New("no functions available: provide either --package-file or --functions-file")
+    }
 
 	renderInputs := render.Inputs{
 		CompositeResource: compositeResource,
