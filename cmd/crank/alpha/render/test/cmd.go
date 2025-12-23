@@ -34,6 +34,7 @@ type Cmd struct {
 	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." type:"path"`
 
 	// Flags. Keep them in alphabetical order.
+	FunctionsFile        string        `help:"Path to functions file (default: dev-functions.yaml)."`
 	OutputFile           string        `default:"expected.yaml" help:"Name of the output file (used when not comparing)."`
 	PackageFile          string        `help:"Path to package.yaml file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"            help:"How long to run before timing out."`
@@ -50,13 +51,28 @@ Render composite resources (XRs) and assert results.
 This command renders XRs and compares them with expected outputs by default.
 Use --write-expected-outputs to generate/update expected.yaml files.
 
+Function resolution:
+  - If --package-file is provided, functions are resolved from package.yaml
+  - If --functions-file is provided, functions are loaded from that file
+  - If both are provided, functions-file takes precedence (allows overrides)
+  - Default functions file is dev-functions.yaml (if it exists)
+
 Examples:
 
     # Compare actual outputs with expected.yaml files (default)
     crossplane alpha render test
 
-    # Generate/update expected.yaml files
+	# Generate/update expected.yaml files
     crossplane alpha render test --write-expected-outputs
+
+	# Use package.yaml to auto-resolve function versions
+    crossplane alpha render test --package-file=apis/package.yaml
+
+	# Use a custom functions file
+    crossplane alpha render test --functions-file=my-functions.yaml
+
+	# Use both: package.yaml for defaults, custom functions file for overrides
+    crossplane alpha render test --package-file=apis/package.yaml --functions-file=local-dev.yaml
 
     # Test a specific directory
     crossplane alpha render test tests/my-test
@@ -84,6 +100,7 @@ func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 		WriteExpectedOutputs: c.WriteExpectedOutputs,
 		OutputFile:           c.OutputFile,
 		PackageFile:          c.PackageFile,
+		FunctionsFile:        c.FunctionsFile,
 	})
 	if err != nil {
 		return err

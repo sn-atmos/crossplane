@@ -65,6 +65,7 @@ type Inputs struct {
 	FileSystem           afero.Fs
 	OutputFile           string
 	PackageFile          string
+	FunctionsFile        string
 	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
 }
 
@@ -97,7 +98,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions)
+		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions, in.FunctionsFile)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -291,6 +292,31 @@ func resolvePackageVersion(packageURL, versionConstraint string) (string, error)
 	return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
 }
 
+// mergeFunctions merges package functions with file functions, with file functions taking precedence.
+func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
+    // Create a map of file functions by name for quick lookup
+    fileMap := make(map[string]pkgv1.Function, len(fileFunctions))
+    for _, fn := range fileFunctions {
+        fileMap[fn.Name] = fn
+    }
+
+    // Start with file functions
+    merged := make([]pkgv1.Function, 0, len(packageFunctions)+len(fileFunctions))
+    merged = append(merged, fileFunctions...)
+
+    // Add package functions that aren't overridden by file functions
+    for _, fn := range packageFunctions {
+        if _, exists := fileMap[fn.Name]; !exists {
+            merged = append(merged, fn)
+        } else {
+            log.Debug("Function from package overridden by functions file", "name", fn.Name)
+        }
+    }
+
+    log.Debug("Merged functions", "totalCount", len(merged), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions)-len(fileMap)+len(fileFunctions))
+    return merged
+}
+
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
 func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) {
 	var testDirs []string
@@ -311,7 +337,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -330,22 +356,38 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
-	// Load functions from file if it exists, otherwise use resolved functions
-    var functions []pkgv1.Function
-    functionFileExists, err := afero.Exists(filesystem, FunctionsFileName)
+	// Determine which functions file to use
+    if functionsFile == "" {
+        functionsFile = FunctionsFileName
+    }
+
+	// Load functions from file if it exists
+    var fileFunctions []pkgv1.Function
+    functionFileExists, err := afero.Exists(filesystem, functionsFile)
     if err != nil {
         return nil, errors.Wrapf(err, "cannot check if functions file exists")
     }
 
     if functionFileExists {
-        functions, err = render.LoadFunctions(filesystem, FunctionsFileName)
+        fileFunctions, err = render.LoadFunctions(filesystem, functionsFile)
         if err != nil {
             return nil, errors.Wrap(err, "cannot load functions from functions file")
         }
-        log.Debug("Loaded functions from file", "path", FunctionsFileName)
-    } else {
+        log.Debug("Loaded functions from file", "path", functionsFile, "count", len(fileFunctions))
+    }
+
+	// Merge functions: file functions take precedence over package functions
+    var functions []pkgv1.Function
+    if len(resolvedFunctions) > 0 && len(fileFunctions) > 0 {
+        functions = mergeFunctions(resolvedFunctions, fileFunctions, log)
+    } else if len(fileFunctions) > 0 {
+        functions = fileFunctions
+        log.Debug("Using functions from file only")
+    } else if len(resolvedFunctions) > 0 {
         functions = resolvedFunctions
-        log.Debug("Using resolved functions from package.yaml")
+        log.Debug("Using resolved functions from package.yaml only")
+    } else {
+        return nil, errors.New("no functions available: provide either --package-file or --functions-file")
     }
 
 	renderInputs := render.Inputs{
