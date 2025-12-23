@@ -219,10 +219,9 @@ func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log lo
                 },
                 ObjectMeta: metav1.ObjectMeta{
                     Name: functionName,
-                    Annotations: map[string]string{
-                        "render.crossplane.io/runtime":                    "Development",
-                        "render.crossplane.io/runtime-development-target": fmt.Sprintf("dns:///%s:9443", functionName),
-                    },
+					Annotations: map[string]string{
+						"render.crossplane.io/runtime-docker-name": functionName,
+					},
                 },
                 Spec: pkgv1.FunctionSpec{
                     PackageSpec: pkgv1.PackageSpec{
