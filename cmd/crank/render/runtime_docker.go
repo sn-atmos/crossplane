@@ -261,7 +261,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 }
 
 func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client) (string, error) {
-	r.log.Debug("Starting Docker container runtime setup", "image", r.Image)
+	r.log.Debug("Starting Docker container runtime setup", "image", r.Image, "network", r.Network)
 
 	// Let Docker automatically allocate an available port on the bind address.
 	// This avoids race conditions and works reliably with Docker daemons.
@@ -273,14 +273,17 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		ExposedPorts: nat.PortSet{port: struct{}{}},
 		Env:          r.Env,
 	}
-	hcfg := &container.HostConfig{
-		PortBindings: nat.PortMap{
-			port: []nat.PortBinding{{
-				HostIP:   r.BindAddress,
-				HostPort: "0", // "0" => engine allocates an ephemeral port
-			}},
-		},
-	}
+
+	// Configure host config - only bind ports if using bridge network
+	hcfg := &container.HostConfig{}
+	if r.Network == "bridge" || r.Network == "" {
+        hcfg.PortBindings = nat.PortMap{
+            port: []nat.PortBinding{{
+                HostIP:   r.BindAddress,
+                HostPort: "0",
+            }},
+        }
+    }
 
 	// Only configure network if explicitly specified
 	var ncfg *network.NetworkingConfig
@@ -308,7 +311,7 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		}
 	}
 
-	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name)
+	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name, "network", r.Network)
 
 	rsp, err := cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
 	if err != nil {
