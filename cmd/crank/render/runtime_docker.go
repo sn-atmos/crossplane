@@ -291,10 +291,6 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
                 r.Network: {},
             },
         }
-        r.log.Debug("Configuring custom network", "network", r.Network)
-        
-        // When using custom network, don't bind ports
-        hcfg.PortBindings = nil
     }
 
 	options, err := r.getPullOptions()
@@ -313,7 +309,7 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		}
 	}
 
-	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name, "network", r.Network)
+	r.log.Debug("Creating Docker container", "image", r.Image, "name", r.Name)
 
 	rsp, err := cli.ContainerCreate(ctx, cfg, hcfg, ncfg, nil, r.Name)
 	if err != nil {
