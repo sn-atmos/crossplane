@@ -349,10 +349,12 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 
 	// If using a custom network, connect via container name
     if r.Network != "" {
-        if r.Name == "" {
+        // Get container name from inspection (removing leading slash if present)
+        containerName := strings.TrimPrefix(inspect.Name, "/")
+        if containerName == "" {
             return "", errors.New("container name is required when using custom Docker network")
         }
-        address := net.JoinHostPort(r.Name, fmt.Sprintf("%d", FunctionPort))
+        address := net.JoinHostPort(containerName, fmt.Sprintf("%d", FunctionPort))
         r.log.Debug("Using container network address", "address", address, "network", r.Network)
         return address, nil
     }
@@ -360,7 +362,7 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	// Default: use port binding
     p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
     if len(inspect.NetworkSettings.Ports[p]) == 0 {
-        return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
+        return "", errors.Errorf("container %q has no published binding for port %s", inspect.Name, p.Port())
     }
 
 	binding := inspect.NetworkSettings.Ports[p][0]
@@ -369,7 +371,7 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		host = binding.HostIP
 	}
 	if host == "" {
-		return "", errors.Errorf("container %q has port binding for %s but no host address", r.Name, p.Port())
+		return "", errors.Errorf("container %q has port binding for %s but no host address", inspect.Name, p.Port())
 	}
 
 	return net.JoinHostPort(host, binding.HostPort), nil
