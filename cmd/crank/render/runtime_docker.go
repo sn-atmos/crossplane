@@ -234,10 +234,8 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 		r.Target = i
 	}
 
-	// Read network annotation - this should override the default
-    if networkName := fn.GetAnnotations()[AnnotationKeyRuntimeDockerNetwork]; networkName != "" {
-        r.Network = networkName
-        r.log.Debug("Using network from annotation", "network", networkName)
+	if i := fn.GetAnnotations()[AnnotationKeyRuntimeDockerNetwork]; i != "" {
+        r.Network = i
     }
 
 	return r, nil
