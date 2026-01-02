@@ -203,7 +203,7 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 		Keychain:    authn.DefaultKeychain,
 		log:         log,
 		BindAddress: "127.0.0.1", // Default to localhost for security
-		Network:     "bridge", // Start with bridge as default
+		Network:     "",
 	}
 
 	if i := fn.GetAnnotations()[AnnotationKeyRuntimeDockerImage]; i != "" {
@@ -275,22 +275,28 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		Env:          r.Env,
 	}
 	
-		// Configure host config - only bind ports if using bridge network
-	hcfg := &container.HostConfig{}
-	if r.Network == "bridge" || r.Network == "" {
-        hcfg.PortBindings = nat.PortMap{
+	// Configure host config with port bindings by default
+	hcfg := &container.HostConfig{
+        PortBindings: nat.PortMap{
             port: []nat.PortBinding{{
                 HostIP:   r.BindAddress,
                 HostPort: "0",
             }},
-        }
+        },
     }
 
-	// Configure network connection
-    ncfg := &network.NetworkingConfig{
-        EndpointsConfig: map[string]*network.EndpointSettings{
-            r.Network: {},
-        },
+	// Only configure network if explicitly specified
+    var ncfg *network.NetworkingConfig
+    if r.Network != "" {
+        ncfg = &network.NetworkingConfig{
+            EndpointsConfig: map[string]*network.EndpointSettings{
+                r.Network: {},
+            },
+        }
+        r.log.Debug("Configuring custom network", "network", r.Network)
+        
+        // When using custom network, don't bind ports
+        hcfg.PortBindings = nil
     }
 
 	options, err := r.getPullOptions()
@@ -347,18 +353,17 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		return "", errors.Wrap(err, "cannot inspect Docker container")
 	}
 
-	// If using a custom network (not bridge), connect directly via container name and internal port
-    if r.Network != "bridge" && r.Network != "" {
+	// If using a custom network, connect via container name
+    if r.Network != "" {
         if r.Name == "" {
             return "", errors.New("container name is required when using custom Docker network")
         }
-        // Use container name as hostname within the Docker network
         address := net.JoinHostPort(r.Name, fmt.Sprintf("%d", FunctionPort))
         r.log.Debug("Using container network address", "address", address, "network", r.Network)
         return address, nil
     }
 
-	// For bridge network, use port binding
+	// Default: use port binding
     p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
     if len(inspect.NetworkSettings.Ports[p]) == 0 {
         return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
