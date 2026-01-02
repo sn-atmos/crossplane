@@ -53,8 +53,7 @@ const (
 	// (i.e. spec.package) can be used to run the Function.
 	AnnotationKeyRuntimeDockerImage = "render.crossplane.io/runtime-docker-image"
 
-	// AnnotationKeyRuntimeDockerNetwork specifies which Docker network
-    // the Function container should connect to. Defaults to "devnet".
+	// AnnotationKeyRuntimeDockerNetwork specifies the Docker network to connect the Function container to.
     AnnotationKeyRuntimeDockerNetwork = "render.crossplane.io/runtime-docker-network"
 
 	// AnnotationKeyRuntimeNamedContainer sets the Docker container name that will
