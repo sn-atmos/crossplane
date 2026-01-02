@@ -260,7 +260,7 @@ func (r *RuntimeDocker) findContainer(ctx context.Context, cli *client.Client) (
 }
 
 func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client) (string, error) {
-	r.log.Debug("Starting Docker container runtime setup", "image", r.Image, "network", r.Network)
+	r.log.Debug("Starting Docker container runtime setup", "image", r.Image)
 
 	// Let Docker automatically allocate an available port on the bind address.
 	// This avoids race conditions and works reliably with Docker daemons.
