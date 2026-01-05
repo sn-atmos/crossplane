@@ -54,7 +54,7 @@ const (
 	AnnotationKeyRuntimeDockerImage = "render.crossplane.io/runtime-docker-image"
 
 	// AnnotationKeyRuntimeDockerNetwork specifies the Docker network to connect the Function container to.
-    AnnotationKeyRuntimeDockerNetwork = "render.crossplane.io/runtime-docker-network"
+	AnnotationKeyRuntimeDockerNetwork = "render.crossplane.io/runtime-docker-network"
 
 	// AnnotationKeyRuntimeNamedContainer sets the Docker container name that will
 	// be used for the container. it will also reuse the same container as long as
@@ -152,7 +152,7 @@ type RuntimeDocker struct {
 	Target string
 
 	// Network specifies the Docker network to connect the container to.
-    Network string
+	Network string
 }
 
 // GetDockerPullPolicy extracts PullPolicy configuration from the supplied
@@ -235,8 +235,8 @@ func GetRuntimeDocker(fn pkgv1.Function, log logging.Logger) (*RuntimeDocker, er
 	}
 
 	if i := fn.GetAnnotations()[AnnotationKeyRuntimeDockerNetwork]; i != "" {
-        r.Network = i
-    }
+		r.Network = i
+	}
 
 	return r, nil
 }
@@ -272,26 +272,26 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		ExposedPorts: nat.PortSet{port: struct{}{}},
 		Env:          r.Env,
 	}
-	
+
 	// Configure host config with port bindings by default
 	hcfg := &container.HostConfig{
-        PortBindings: nat.PortMap{
-            port: []nat.PortBinding{{
-                HostIP:   r.BindAddress,
-                HostPort: "0",
-            }},
-        },
-    }
+		PortBindings: nat.PortMap{
+			port: []nat.PortBinding{{
+				HostIP:   r.BindAddress,
+				HostPort: "0",
+			}},
+		},
+	}
 
 	// Only configure network if explicitly specified
-    var ncfg *network.NetworkingConfig
-    if r.Network != "" {
-        ncfg = &network.NetworkingConfig{
-            EndpointsConfig: map[string]*network.EndpointSettings{
-                r.Network: {},
-            },
-        }
-    }
+	var ncfg *network.NetworkingConfig
+	if r.Network != "" {
+		ncfg = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				r.Network: {},
+			},
+		}
+	}
 
 	options, err := r.getPullOptions()
 	if err != nil {
@@ -348,22 +348,22 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	}
 
 	// If using a custom network, connect via container name
-    if r.Network != "" {
-        // Get container name from inspection (removing leading slash if present)
-        containerName := strings.TrimPrefix(inspect.Name, "/")
-        if containerName == "" {
-            return "", errors.New("container name is required when using custom Docker network")
-        }
-        address := net.JoinHostPort(containerName, fmt.Sprintf("%d", FunctionPort))
-        r.log.Debug("Using container network address", "address", address, "network", r.Network)
-        return address, nil
-    }
+	if r.Network != "" {
+		// Get container name from inspection (removing leading slash if present)
+		containerName := strings.TrimPrefix(inspect.Name, "/")
+		if containerName == "" {
+			return "", errors.New("container name is required when using custom Docker network")
+		}
+		address := net.JoinHostPort(containerName, fmt.Sprintf("%d", FunctionPort))
+		r.log.Debug("Using container network address", "address", address, "network", r.Network)
+		return address, nil
+	}
 
 	// Default: use port binding
-    p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
-    if len(inspect.NetworkSettings.Ports[p]) == 0 {
-        return "", errors.Errorf("container %q has no published binding for port %s", inspect.Name, p.Port())
-    }
+	p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
+	if len(inspect.NetworkSettings.Ports[p]) == 0 {
+		return "", errors.Errorf("container %q has no published binding for port %s", inspect.Name, p.Port())
+	}
 
 	binding := inspect.NetworkSettings.Ports[p][0]
 	host := r.Target
