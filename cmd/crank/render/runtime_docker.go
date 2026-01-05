@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/containerd/errdefs"
@@ -350,7 +351,7 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		// Get container name from inspection (removing leading slash if present)
 		// Docker always assigns a name (either user-specified or auto-generated)
 		containerName := strings.TrimPrefix(inspect.Name, "/")
-		address := net.JoinHostPort(containerName, fmt.Sprintf("%d", FunctionPort))
+		address := net.JoinHostPort(containerName, strconv.Itoa(FunctionPort))
 		r.log.Debug("Using container network address", "address", address, "network", r.Network)
 		return address, nil
 	}
