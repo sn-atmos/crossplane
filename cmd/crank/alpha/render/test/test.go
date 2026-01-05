@@ -64,6 +64,7 @@ type Inputs struct {
 	OutputFile           string
 	PackageFile          string
 	FunctionsFile        string
+	FunctionAnnotations  map[string]string
 	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
 }
 
@@ -96,7 +97,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions, in.FunctionsFile)
+		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions, in.FunctionsFile, in.FunctionAnnotations)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -334,7 +335,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string, functionAnnotations map[string]string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -386,6 +387,19 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 	default:
 		return nil, errors.New("no functions available: provide either --package-file or --functions-file")
 	}
+
+	// Apply function annotation overrides to all functions
+    if len(functionAnnotations) > 0 {
+        for i := range functions {
+            if functions[i].Annotations == nil {
+                functions[i].Annotations = make(map[string]string)
+            }
+            for k, v := range functionAnnotations {
+                functions[i].Annotations[k] = v
+                log.Debug("Applied annotation override", "function", functions[i].Name, "key", k, "value", v)
+            }
+        }
+    }
 
 	renderInputs := render.Inputs{
 		CompositeResource: compositeResource,
