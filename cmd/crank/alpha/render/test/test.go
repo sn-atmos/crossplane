@@ -21,8 +21,10 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -292,27 +294,24 @@ func resolvePackageVersion(packageURL, versionConstraint string) (string, error)
 
 // mergeFunctions merges package functions with file functions, with file functions taking precedence.
 func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
-	// Create a map of file functions by name for quick lookup
-	fileMap := make(map[string]pkgv1.Function, len(fileFunctions))
-	for _, fn := range fileFunctions {
-		fileMap[fn.Name] = fn
+	// Create a map to hold all functions
+	functions := make(map[string]pkgv1.Function, len(packageFunctions)+len(fileFunctions))
+
+	// Add package functions first
+	for _, function := range packageFunctions {
+		functions[function.Name] = function
 	}
 
-	// Start with file functions
-	merged := make([]pkgv1.Function, 0, len(packageFunctions)+len(fileFunctions))
-	merged = append(merged, fileFunctions...)
-
-	// Add package functions that aren't overridden by file functions
-	for _, fn := range packageFunctions {
-		if _, exists := fileMap[fn.Name]; !exists {
-			merged = append(merged, fn)
-		} else {
-			log.Debug("Function from package overridden by functions file", "name", fn.Name)
+	// Add file functions, which will override any package functions with the same name
+	for _, function := range fileFunctions {
+		if _, exists := functions[function.Name]; exists {
+			log.Debug("Function from package overridden by functions file", "name", function.Name)
 		}
+		functions[function.Name] = function
 	}
 
-	log.Debug("Merged functions", "totalCount", len(merged), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions)-len(fileMap)+len(fileFunctions))
-	return merged
+	log.Debug("Merged functions", "totalCount", len(functions), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions))
+	return slices.Collect(maps.Values(functions))
 }
 
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
@@ -389,17 +388,17 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 	}
 
 	// Apply function annotation overrides to all functions
-    if len(functionAnnotations) > 0 {
-        for i := range functions {
-            if functions[i].Annotations == nil {
-                functions[i].Annotations = make(map[string]string)
-            }
-            for k, v := range functionAnnotations {
-                functions[i].Annotations[k] = v
-                log.Debug("Applied annotation override", "function", functions[i].Name, "key", k, "value", v)
-            }
-        }
-    }
+	if len(functionAnnotations) > 0 {
+		for i := range functions {
+			if functions[i].Annotations == nil {
+				functions[i].Annotations = make(map[string]string)
+			}
+			for k, v := range functionAnnotations {
+				functions[i].Annotations[k] = v
+				log.Debug("Applied annotation override", "function", functions[i].Name, "key", k, "value", v)
+			}
+		}
+	}
 
 	renderInputs := render.Inputs{
 		CompositeResource: compositeResource,
