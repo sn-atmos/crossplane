@@ -75,7 +75,7 @@ type Outputs struct {
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
 func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
-	// Resolve functions from package.yaml if provided
+	// Resolve functions from package file if provided
 	var resolvedFunctions []pkgv1.Function
 	if in.PackageFile != "" {
 		var err error
@@ -180,9 +180,8 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	}, nil
 }
 
-// resolveFunctionsFromPackage reads apis/package.yaml and resolves function versions.
+// resolveFunctionsFromPackage reads the package file and resolves function versions.
 func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log logging.Logger) ([]pkgv1.Function, error) {
-	// Read package.yaml
 	packageData, err := afero.ReadFile(filesystem, packageFile)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot read package file %q", packageFile)
@@ -191,14 +190,14 @@ func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log lo
 	// Parse as Configuration using JSON-compatible YAML unmarshaling
 	var config pkgmetav1.Configuration
 	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
-		return nil, errors.Wrap(err, "cannot unmarshal package.yaml")
+		return nil, errors.Wrap(err, "cannot unmarshal package file")
 	}
 
 	// Extract functions from dependsOn
 	functions := make([]pkgv1.Function, 0, len(config.Spec.DependsOn))
 	for _, dep := range config.Spec.DependsOn {
 		if dep.Kind != nil && *dep.Kind == "Function" && dep.Package != nil {
-			// Find the newest version within the constraints specified in the package.yaml file
+			// Find the newest version within the constraints specified in the package file
 			packageWithVersion, err := resolvePackageVersion(*dep.Package, dep.Version)
 			if err != nil {
 				return nil, errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
@@ -233,14 +232,14 @@ func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log lo
 	}
 
 	if len(functions) == 0 {
-		return nil, errors.New("no functions found in package.yaml")
+		return nil, errors.New("no functions found in package file")
 	}
 
 	log.Debug("Resolved functions from package", "functionCount", len(functions))
 	return functions, nil
 }
 
-// resolvePackageVersion lists available tags and finds the newest version within the constraints of the package.yaml file.
+// resolvePackageVersion lists available tags and finds the newest version within the constraints of the package file.
 // This logic is adapted from internal/controller/pkg/resolver/reconciler.go.
 func resolvePackageVersion(packageURL, versionConstraint string) (string, error) {
 	// Parse the repository reference
@@ -373,17 +372,17 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		log.Debug("Loaded functions from file", "path", functionsFile, "count", len(fileFunctions))
 	}
 
-	// Merge functions: file functions take precedence over package functions
+	// Merge functions: functions from a functions file take precedence over functions from a package file
 	var functions []pkgv1.Function
 	switch {
 	case len(resolvedFunctions) > 0 && len(fileFunctions) > 0:
 		functions = mergeFunctions(resolvedFunctions, fileFunctions, log)
 	case len(fileFunctions) > 0:
 		functions = fileFunctions
-		log.Debug("Using functions from file only")
+		log.Debug("Using functions from functions file only")
 	case len(resolvedFunctions) > 0:
 		functions = resolvedFunctions
-		log.Debug("Using resolved functions from package.yaml only")
+		log.Debug("Using resolved functions from package file only")
 	default:
 		return nil, errors.New("no functions available: provide either --package-file or --functions-file")
 	}
