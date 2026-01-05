@@ -277,13 +277,13 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 	// Configure host config - only bind ports if using bridge network
 	hcfg := &container.HostConfig{}
 	if r.Network == "bridge" || r.Network == "" {
-        hcfg.PortBindings = nat.PortMap{
-            port: []nat.PortBinding{{
-                HostIP:   r.BindAddress,
-                HostPort: "0",
-            }},
-        }
-    }
+		hcfg.PortBindings = nat.PortMap{
+			port: []nat.PortBinding{{
+				HostIP:   r.BindAddress,
+				HostPort: "0",
+			}},
+		}
+	}
 
 	// Only configure network if explicitly specified
 	var ncfg *network.NetworkingConfig
