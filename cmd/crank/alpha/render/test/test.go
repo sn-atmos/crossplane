@@ -375,15 +375,16 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 
 	// Merge functions: file functions take precedence over package functions
 	var functions []pkgv1.Function
-	if len(resolvedFunctions) > 0 && len(fileFunctions) > 0 {
+	switch {
+	case len(resolvedFunctions) > 0 && len(fileFunctions) > 0:
 		functions = mergeFunctions(resolvedFunctions, fileFunctions, log)
-	} else if len(fileFunctions) > 0 {
+	case len(fileFunctions) > 0:
 		functions = fileFunctions
 		log.Debug("Using functions from file only")
-	} else if len(resolvedFunctions) > 0 {
+	case len(resolvedFunctions) > 0:
 		functions = resolvedFunctions
 		log.Debug("Using resolved functions from package.yaml only")
-	} else {
+	default:
 		return nil, errors.New("no functions available: provide either --package-file or --functions-file")
 	}
 
