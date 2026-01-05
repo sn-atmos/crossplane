@@ -358,7 +358,7 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 	// Default: use port binding
 	p := nat.Port(fmt.Sprintf("%d/tcp", FunctionPort))
 	if len(inspect.NetworkSettings.Ports[p]) == 0 {
-		return "", errors.Errorf("container %q has no published binding for port %s", inspect.Name, p.Port())
+		return "", errors.Errorf("container %q has no published binding for port %s", r.Name, p.Port())
 	}
 
 	binding := inspect.NetworkSettings.Ports[p][0]
@@ -367,7 +367,7 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		host = binding.HostIP
 	}
 	if host == "" {
-		return "", errors.Errorf("container %q has port binding for %s but no host address", inspect.Name, p.Port())
+		return "", errors.Errorf("container %q has port binding for %s but no host address", r.Name, p.Port())
 	}
 
 	return net.JoinHostPort(host, binding.HostPort), nil
