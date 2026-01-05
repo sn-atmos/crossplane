@@ -272,8 +272,6 @@ func (r *RuntimeDocker) createContainer(ctx context.Context, cli *client.Client)
 		ExposedPorts: nat.PortSet{port: struct{}{}},
 		Env:          r.Env,
 	}
-
-	// Configure host config with port bindings by default
 	hcfg := &container.HostConfig{
 		PortBindings: nat.PortMap{
 			port: []nat.PortBinding{{
