@@ -350,9 +350,6 @@ func (r *RuntimeDocker) startContainer(ctx context.Context, cli *client.Client, 
 		// Get container name from inspection (removing leading slash if present)
 		// Docker always assigns a name (either user-specified or auto-generated)
 		containerName := strings.TrimPrefix(inspect.Name, "/")
-		if containerName == "" {
-			return "", errors.New("failed to get container name from Docker inspect")
-		}
 		address := net.JoinHostPort(containerName, fmt.Sprintf("%d", FunctionPort))
 		r.log.Debug("Using container network address", "address", address, "network", r.Network)
 		return address, nil
