@@ -55,8 +55,6 @@ const (
 	ExtraResourcesFileName = "extra-resources.yaml"
 	// ObservedResourcesFileName is the name of the file containing observed resources.
 	ObservedResourcesFileName = "observed-resources.yaml"
-	// FunctionsFileName is the name of the file containing the function configurations.
-	FunctionsFileName = "dev-functions.yaml"
 )
 
 // Inputs contains all inputs to the test process.
@@ -356,19 +354,18 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
 	}
 
-	// Determine which functions file to use
-	if functionsFile == "" {
-		functionsFile = FunctionsFileName
-	}
-
-	// Load functions from file if it exists
+	// Load functions from file if specified
 	var fileFunctions []pkgv1.Function
-	functionFileExists, err := afero.Exists(filesystem, functionsFile)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cannot check if functions file exists")
-	}
+	if functionsFile != "" {
+		functionFileExists, err := afero.Exists(filesystem, functionsFile)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot check if functions file exists")
+		}
 
-	if functionFileExists {
+		if !functionFileExists {
+			return nil, errors.Errorf("functions file %q does not exist", functionsFile)
+		}
+
 		fileFunctions, err = render.LoadFunctions(filesystem, functionsFile)
 		if err != nil {
 			return nil, errors.Wrap(err, "cannot load functions from functions file")

@@ -34,7 +34,7 @@ type Cmd struct {
 	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	FunctionsFile        string        `help:"Path to functions file (default: dev-functions.yaml)."`
+	FunctionsFile        string        `help:"Path to functions file for function resolution."`
 	OutputFile           string        `default:"expected.yaml"                                           help:"Name of the output file (used when not comparing)."`
 	PackageFile          string        `help:"Path to package.yaml file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"                                                      help:"How long to run before timing out."`
@@ -43,7 +43,7 @@ type Cmd struct {
 	fs afero.Fs
 }
 
-// Help prints out the help for the alpha render op command.
+// Help prints out the help for the alpha render test command.
 func (c *Cmd) Help() string {
 	return `
 Render composite resources (XRs) and assert results.
@@ -51,34 +51,30 @@ Render composite resources (XRs) and assert results.
 This command renders XRs and compares them with expected outputs by default.
 Use --write-expected-outputs to generate/update expected.yaml files.
 
-Function resolution:
-  - If --package-file is provided, functions are resolved from package.yaml
-  - If --functions-file is provided, functions are loaded from that file
-  - If both are provided, functions-file takes precedence (allows overrides)
-  - Default functions file is dev-functions.yaml (if it exists)
+Function resolution (at least one is required):
+  - Provide --package-file to resolve functions from package.yaml
+  - Provide --functions-file to load functions from a specific file
+  - If both are provided, the functions-file takes precedence over package.yaml for any overlapping functions
 
 Examples:
 
     # Compare actual outputs with expected.yaml files (default)
-    crossplane alpha render test
+    crossplane alpha render test --functions-file=dev-functions.yaml
 
 	# Generate/update expected.yaml files
-    crossplane alpha render test --write-expected-outputs
+    crossplane alpha render test --functions-file=dev-functions.yaml --write-expected-outputs
 
 	# Use package.yaml to auto-resolve function versions
     crossplane alpha render test --package-file=apis/package.yaml
 
-	# Use a custom functions file
-    crossplane alpha render test --functions-file=my-functions.yaml
-
 	# Use both: package.yaml for defaults, custom functions file for overrides
-    crossplane alpha render test --package-file=apis/package.yaml --functions-file=local-dev.yaml
+    crossplane alpha render test --package-file=apis/package.yaml --functions-file=dev-functions.yaml
 
     # Test a specific directory
-    crossplane alpha render test tests/my-test
+    crossplane alpha render test tests/my-test --functions-file=dev-functions.yaml
 
     # Generate outputs with a different filename
-    crossplane alpha render test --write-expected-outputs --output-file=snapshot.yaml
+    crossplane alpha render test --functions-file=dev-functions.yaml --write-expected-outputs --output-file=snapshot.yaml
 `
 }
 
