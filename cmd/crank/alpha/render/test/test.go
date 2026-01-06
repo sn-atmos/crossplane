@@ -292,28 +292,6 @@ func resolvePackageVersion(packageURL, versionConstraint string) (string, error)
 	return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
 }
 
-// mergeFunctions merges package functions with file functions, with file functions taking precedence.
-func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
-	// Create a map to hold all functions
-	functions := make(map[string]pkgv1.Function, len(packageFunctions)+len(fileFunctions))
-
-	// Add package functions first
-	for _, function := range packageFunctions {
-		functions[function.Name] = function
-	}
-
-	// Add file functions, which will override any package functions with the same name
-	for _, function := range fileFunctions {
-		if _, exists := functions[function.Name]; exists {
-			log.Debug("Function from package overridden by functions file", "name", function.Name)
-		}
-		functions[function.Name] = function
-	}
-
-	log.Debug("Merged functions", "totalCount", len(functions), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions))
-	return slices.Collect(maps.Values(functions))
-}
-
 // findTestDirectories finds all directories containing a composite-resource.yaml file.
 func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) {
 	var testDirs []string
@@ -487,6 +465,28 @@ func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v
 	}
 
 	return foundComposition, nil
+}
+
+// mergeFunctions merges package functions with file functions, with file functions taking precedence.
+func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
+	// Create a map to hold all functions
+	functions := make(map[string]pkgv1.Function, len(packageFunctions)+len(fileFunctions))
+
+	// Add package functions first
+	for _, function := range packageFunctions {
+		functions[function.Name] = function
+	}
+
+	// Add file functions, which will override any package functions with the same name
+	for _, function := range fileFunctions {
+		if _, exists := functions[function.Name]; exists {
+			log.Debug("Function from package overridden by functions file", "name", function.Name)
+		}
+		functions[function.Name] = function
+	}
+
+	log.Debug("Merged functions", "totalCount", len(functions), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions))
+	return slices.Collect(maps.Values(functions))
 }
 
 // loadOptionalResources loads optional extra resources, observed resources, and contexts.
