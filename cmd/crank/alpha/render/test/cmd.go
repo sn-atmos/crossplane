@@ -65,26 +65,26 @@ Function annotations:
 Examples:
 
     # Compare actual outputs with expected.yaml files (default)
-    crossplane alpha render test --functions-file=dev-functions.yaml
+    crossplane alpha render test --functions-file=functions.yaml
 
 	# Generate/update expected.yaml files
-    crossplane alpha render test --functions-file=dev-functions.yaml --write-expected-outputs
+    crossplane alpha render test --functions-file=functions.yaml --write-expected-outputs
 
 	# Use package.yaml to auto-resolve function versions
     crossplane alpha render test --package-file=apis/package.yaml
 
 	# Use both: package.yaml for defaults, custom functions file for overrides
-    crossplane alpha render test --package-file=apis/package.yaml --functions-file=dev-functions.yaml
+    crossplane alpha render test --package-file=apis/package.yaml --functions-file=functions.yaml
 
 	# Use custom Docker network for all functions
     crossplane alpha render test --package-file=apis/package.yaml \
       -a render.crossplane.io/runtime-docker-network=devnet
 
     # Test a specific directory
-    crossplane alpha render test tests/my-test --functions-file=dev-functions.yaml
+    crossplane alpha render test tests/my-test --functions-file=functions.yaml
 
     # Generate outputs with a different filename
-    crossplane alpha render test --functions-file=dev-functions.yaml --write-expected-outputs --output-file=snapshot.yaml
+    crossplane alpha render test --functions-file=functions.yaml --write-expected-outputs --output-file=snapshot.yaml
 `
 }
 
