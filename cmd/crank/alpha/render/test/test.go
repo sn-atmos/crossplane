@@ -234,10 +234,6 @@ func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log lo
 		}
 	}
 
-	if len(functions) == 0 {
-		return nil, errors.New("no functions found in package file")
-	}
-
 	log.Debug("Resolved functions from package", "functionCount", len(functions))
 	return functions, nil
 }
