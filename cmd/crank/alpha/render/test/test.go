@@ -351,19 +351,7 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 	}
 
 	// Merge functions: functions from a functions file take precedence over functions from a package file
-	var functions []pkgv1.Function
-	switch {
-	case len(resolvedFunctions) > 0 && len(fileFunctions) > 0:
-		functions = mergeFunctions(resolvedFunctions, fileFunctions, log)
-	case len(fileFunctions) > 0:
-		functions = fileFunctions
-		log.Debug("Using functions from functions file only")
-	case len(resolvedFunctions) > 0:
-		functions = resolvedFunctions
-		log.Debug("Using resolved functions from package file only")
-	default:
-		return nil, errors.New("no functions available: provide either --package-file or --functions-file")
-	}
+	functions := mergeFunctions(resolvedFunctions, fileFunctions, log)
 
 	// Apply function annotation overrides to all functions
 	if len(functionAnnotations) > 0 {
