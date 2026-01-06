@@ -66,8 +66,8 @@ type Inputs struct {
 	OutputFile           string
 	PackageFile          string
 	FunctionsFile        string
-	FunctionAnnotations  map[string]string
-	WriteExpectedOutputs bool // If true, write/update expected.yaml files instead of comparing
+	FunctionAnnotations  []string // Annotations to apply to all functions (KEY=VALUE format)
+	WriteExpectedOutputs bool     // If true, write/update expected.yaml files instead of comparing
 }
 
 // Outputs contains test results.
@@ -308,7 +308,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string, functionAnnotations map[string]string) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string, functionAnnotations []string) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -350,16 +350,8 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 	functions := mergeFunctions(resolvedFunctions, fileFunctions, log)
 
 	// Apply function annotation overrides to all functions
-	if len(functionAnnotations) > 0 {
-		for i := range functions {
-			if functions[i].Annotations == nil {
-				functions[i].Annotations = make(map[string]string)
-			}
-			for k, v := range functionAnnotations {
-				functions[i].Annotations[k] = v
-				log.Debug("Applied annotation override", "function", functions[i].Name, "key", k, "value", v)
-			}
-		}
+	if err := render.OverrideFunctionAnnotations(functions, functionAnnotations); err != nil {
+		return nil, errors.Wrap(err, "cannot apply function annotation overrides")
 	}
 
 	renderInputs := render.Inputs{

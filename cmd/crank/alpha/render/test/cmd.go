@@ -19,7 +19,6 @@ package test
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -99,16 +98,6 @@ func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	// Parse function annotations
-	functionAnnotations := make(map[string]string)
-	for _, a := range c.FunctionAnnotations {
-		parts := strings.SplitN(a, "=", 2)
-		if len(parts) != 2 {
-			return errors.Errorf("invalid annotation format %q (expected KEY=VALUE)", a)
-		}
-		functionAnnotations[parts[0]] = parts[1]
-	}
-
 	// Run the test
 	result, err := Test(ctx, log, Inputs{
 		TestDir:              c.TestDir,
@@ -117,7 +106,7 @@ func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 		OutputFile:           c.OutputFile,
 		PackageFile:          c.PackageFile,
 		FunctionsFile:        c.FunctionsFile,
-		FunctionAnnotations:  functionAnnotations,
+		FunctionAnnotations:  c.FunctionAnnotations,
 	})
 	if err != nil {
 		return err
