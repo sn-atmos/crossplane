@@ -34,12 +34,12 @@ type Cmd struct {
 	TestDir string `arg:"" default:"tests" help:"Directory containing test cases." type:"path"`
 
 	// Flags. Keep them in alphabetical order.
-	FunctionAnnotations  []string      `help:"Override function annotations for all functions. Can be repeated." short:"a"`
+	FunctionAnnotations  []string      `help:"Override function annotations for all functions. Can be repeated."                                   short:"a"`
 	FunctionsFile        string        `help:"Path to functions file for function resolution. Required if --package-file is not provided."`
-	OutputFile           string        `default:"expected.yaml"                                                  help:"Name of the output file (used when not comparing)."`
+	OutputFile           string        `default:"expected.yaml"                                                                                    help:"Name of the output file (used when not comparing)."`
 	PackageFile          string        `help:"Path to package file for resolving function versions. Required if --functions-file is not provided."`
-	Timeout              time.Duration `default:"1m"                                                             help:"How long to run before timing out."`
-	WriteExpectedOutputs bool          `default:"false"                                                          help:"Write/update expected.yaml files instead of comparing." short:"w"`
+	Timeout              time.Duration `default:"1m"                                                                                               help:"How long to run before timing out."`
+	WriteExpectedOutputs bool          `default:"false"                                                                                            help:"Write/update expected.yaml files instead of comparing." short:"w"`
 
 	fs afero.Fs
 }
