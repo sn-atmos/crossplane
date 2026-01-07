@@ -35,9 +35,9 @@ type Cmd struct {
 
 	// Flags. Keep them in alphabetical order.
 	FunctionAnnotations  []string      `help:"Override function annotations for all functions. Can be repeated."                                   short:"a"`
-	FunctionsFile        string        `help:"Path to functions file for function resolution. Required if --package-file is not provided."`
+	FunctionsFile        string        `help:"Path to functions file for function resolution."`
 	OutputFile           string        `default:"expected.yaml"                                                                                    help:"Name of the output file (used when not comparing)."`
-	PackageFile          string        `help:"Path to package file for resolving function versions. Required if --functions-file is not provided."`
+	PackageFile          string        `help:"Path to package file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"                                                                                               help:"How long to run before timing out."`
 	WriteExpectedOutputs bool          `default:"false"                                                                                            help:"Write/update expected.yaml files instead of comparing." short:"w"`
 
@@ -56,6 +56,7 @@ Function resolution (at least one is required):
   - Provide --package-file to resolve functions from a package file
   - Provide --functions-file to load functions from a specific file
   - If both are provided, the functions-file takes precedence over the package file for any overlapping functions
+  - If neither is provided, the composition must not reference any functions
 
 Function annotations:
   - Use --function-annotations to override annotations for all functions
