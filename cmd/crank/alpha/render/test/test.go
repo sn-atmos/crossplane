@@ -96,6 +96,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
             return Outputs{}, errors.Wrapf(err, "cannot check if functions file exists")
         }
 
+        // Check existence rather than just attempt loading, to provide the user with a clearer error message
         if !functionFileExists {
             return Outputs{}, errors.Errorf("functions file %q does not exist", in.FunctionsFile)
         }
