@@ -88,6 +88,33 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		}
 	}
 
+	// Load functions from file if specified
+    var fileFunctions []pkgv1.Function
+    if in.FunctionsFile != "" {
+        functionFileExists, err := afero.Exists(in.FileSystem, in.FunctionsFile)
+        if err != nil {
+            return Outputs{}, errors.Wrapf(err, "cannot check if functions file exists")
+        }
+
+        if !functionFileExists {
+            return Outputs{}, errors.Errorf("functions file %q does not exist", in.FunctionsFile)
+        }
+
+        fileFunctions, err = render.LoadFunctions(in.FileSystem, in.FunctionsFile)
+        if err != nil {
+            return Outputs{}, errors.Wrap(err, "cannot load functions from functions file")
+        }
+        log.Debug("Loaded functions from file", "path", in.FunctionsFile, "count", len(fileFunctions))
+    }
+
+    // Merge functions: functions from a functions file take precedence over functions from a package file
+    functions := mergeFunctions(resolvedFunctions, fileFunctions, log)
+
+    // Apply function annotation overrides to all functions
+    if err := render.OverrideFunctionAnnotations(functions, in.FunctionAnnotations); err != nil {
+        return Outputs{}, errors.Wrap(err, "cannot apply function annotation overrides")
+    }
+
 	// Find all directories with a composite-resource.yaml file
 	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
 	if err != nil {
@@ -99,7 +126,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Process tests sequentially
 	results := make(map[string][]byte)
 	for _, dir := range testDirs {
-		output, err := renderTest(ctx, log, in.FileSystem, dir, resolvedFunctions, in.FunctionsFile, in.FunctionAnnotations)
+		output, err := renderTest(ctx, log, in.FileSystem, dir, functions)
 		if err != nil {
 			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
 		}
@@ -308,7 +335,7 @@ func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) 
 }
 
 // renderTest renders a single test directory.
-func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, resolvedFunctions []pkgv1.Function, functionsFile string, functionAnnotations []string) ([]byte, error) {
+func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, dir string, functions []pkgv1.Function) ([]byte, error) {
 	log.Debug("Processing test directory", "directory", dir)
 
 	compositeResource, err := loadCompositeResource(filesystem, dir)
@@ -325,33 +352,6 @@ func renderTest(ctx context.Context, log logging.Logger, filesystem afero.Fs, di
 	composition, err := findComposition(filesystem, ".", compositionName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot find composition for %q", compositionName)
-	}
-
-	// Load functions from file if specified
-	var fileFunctions []pkgv1.Function
-	if functionsFile != "" {
-		functionFileExists, err := afero.Exists(filesystem, functionsFile)
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot check if functions file exists")
-		}
-
-		if !functionFileExists {
-			return nil, errors.Errorf("functions file %q does not exist", functionsFile)
-		}
-
-		fileFunctions, err = render.LoadFunctions(filesystem, functionsFile)
-		if err != nil {
-			return nil, errors.Wrap(err, "cannot load functions from functions file")
-		}
-		log.Debug("Loaded functions from file", "path", functionsFile, "count", len(fileFunctions))
-	}
-
-	// Merge functions: functions from a functions file take precedence over functions from a package file
-	functions := mergeFunctions(resolvedFunctions, fileFunctions, log)
-
-	// Apply function annotation overrides to all functions
-	if err := render.OverrideFunctionAnnotations(functions, functionAnnotations); err != nil {
-		return nil, errors.Wrap(err, "cannot apply function annotation overrides")
 	}
 
 	renderInputs := render.Inputs{
