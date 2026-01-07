@@ -448,12 +448,11 @@ func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log loggin
 	// Create a map to hold all functions
 	functions := make(map[string]pkgv1.Function, len(packageFunctions)+len(fileFunctions))
 
-	// Add package functions first
 	for _, function := range packageFunctions {
 		functions[function.Name] = function
 	}
 
-	// Add file functions, which will override any package functions with the same name
+	// Overrides function derived from package file if same name is used in function file
 	for _, function := range fileFunctions {
 		if _, exists := functions[function.Name]; exists {
 			log.Debug("Function from package overridden by functions file", "name", function.Name)
