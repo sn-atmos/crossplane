@@ -67,7 +67,7 @@ type Inputs struct {
 	PackageFile          string
 	FunctionsFile        string
 	FunctionAnnotations  []string // Annotations to apply to all functions (KEY=VALUE format)
-	WriteExpectedOutputs bool     // If true, write/update expected.yaml files instead of comparing
+	WriteExpectedOutputs bool     // If true, write/update OutputFile for each test instead of comparing
 }
 
 // Outputs contains test results.
