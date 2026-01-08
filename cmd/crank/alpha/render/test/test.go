@@ -350,7 +350,6 @@ func compareOutputs(in Inputs, testDirs []string, results map[string]render.Outp
 			return false, errors.Wrapf(err, "cannot marshal outputs for %q", dir)
 		}
 
-		// Compare expected vs. actual
 		expectedOutput, err := afero.ReadFile(in.FileSystem, filepath.Join(dir, in.OutputFile))
 		if err != nil {
 			return false, errors.Wrapf(err, "cannot read expected output for test %q", dir)
