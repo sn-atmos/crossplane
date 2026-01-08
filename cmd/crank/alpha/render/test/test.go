@@ -57,8 +57,8 @@ const (
 	ExtraResourcesFileName = "extra-resources.yaml"
 	// ObservedResourcesFileName is the name of the file containing observed resources.
 	ObservedResourcesFileName = "observed-resources.yaml"
-
-	InternalCleanupAnnotation = "internal." + render.AnnotationKeyRuntimeDockerCleanup
+	// tmpCleanupAnnotation temporarily stores potential function cleanup annotation during test runs.
+	tmpCleanupAnnotation = "internal." + render.AnnotationKeyRuntimeDockerCleanup
 )
 
 // Inputs contains all inputs to the test process.
@@ -132,7 +132,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		a := functions[i].GetAnnotations()
 		if _, ok := a[render.AnnotationKeyRuntimeNamedContainer]; ok {
 			if cleanup, ok := a[render.AnnotationKeyRuntimeDockerCleanup]; ok {
-				a[InternalCleanupAnnotation] = cleanup
+				a[tmpCleanupAnnotation] = cleanup
 			}
 			a[render.AnnotationKeyRuntimeDockerCleanup] = string(render.AnnotationValueRuntimeDockerCleanupOrphan)
 			functions[i].SetAnnotations(a)
@@ -163,12 +163,12 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	// Revert cleanup annotations to original values
 	for i := range namedFunctions {
 		a := namedFunctions[i].GetAnnotations()
-		if cleanup, ok := a[InternalCleanupAnnotation]; ok {
+		if cleanup, ok := a[tmpCleanupAnnotation]; ok {
 			a[render.AnnotationKeyRuntimeDockerCleanup] = cleanup
 		} else {
 			delete(a, render.AnnotationKeyRuntimeDockerCleanup)
 		}
-		delete(a, InternalCleanupAnnotation)
+		delete(a, tmpCleanupAnnotation)
 		namedFunctions[i].SetAnnotations(a)
 	}
 
