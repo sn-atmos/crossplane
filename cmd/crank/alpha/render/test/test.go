@@ -165,10 +165,10 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 		a := namedFunctions[i].GetAnnotations()
 		if cleanup, ok := a[tmpCleanupAnnotation]; ok {
 			a[render.AnnotationKeyRuntimeDockerCleanup] = cleanup
+			delete(a, tmpCleanupAnnotation)
 		} else {
 			delete(a, render.AnnotationKeyRuntimeDockerCleanup)
 		}
-		delete(a, tmpCleanupAnnotation)
 		namedFunctions[i].SetAnnotations(a)
 	}
 
