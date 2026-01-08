@@ -446,6 +446,7 @@ func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v
 		composition, err := render.LoadComposition(filesystem, path)
 		if err != nil {
 			// Not a valid composition file, skip it
+			//nolint:nilerr // Intentionally ignoring load errors to skip non-composition YAML files
 			return nil
 		}
 
