@@ -38,7 +38,7 @@ type Cmd struct {
 	// Flags. Keep them in alphabetical order.
 	FunctionAnnotations  []string      `help:"Override function annotations for all functions. Can be repeated." short:"a"`
 	FunctionsFile        string        `help:"Path to functions file for function resolution."`
-	IncludeFullXR        bool          `default:"false" help:"Include a direct copy of the input XR's spec and metadata fields in the rendered output."                                                  short:"x"`
+	IncludeFullXR        bool          `default:"false" help:"Include a direct copy of the input XR's spec and metadata fields in the rendered output." short:"x"`
 	OutputFile           string        `default:"expected.yaml"                                                  help:"Name of the output file (used when not comparing)."`
 	PackageFile          string        `help:"Path to package file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"                                                             help:"How long to run before timing out."`
