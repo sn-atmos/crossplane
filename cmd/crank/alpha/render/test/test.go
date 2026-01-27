@@ -378,7 +378,7 @@ func renderTest(ctx context.Context, log logging.Logger, rc renderConfiguration)
 		return render.Outputs{}, errors.Wrap(err, "cannot render composite resource")
 	}
 
-	// from cmd/crank/render/cmd.go:304
+	// from cb59913b81fee84f966b5c43f87fa809efdd962e/cmd/crank/render/cmd.go:304
 	if rc.includeFullXR {
 		xrSpec, err := fieldpath.Pave(compositeResource.Object).GetValue("spec")
 		if err != nil {
