@@ -80,6 +80,7 @@ type Inputs struct {
 type Outputs struct {
 	TestDirs []string // Directories containing tests
 	Pass     bool     // Test result
+	Rendered map[string]render.Outputs
 }
 
 // Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
@@ -210,6 +211,7 @@ func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
 	return Outputs{
 		TestDirs: testDirs,
 		Pass:     !testFailed,
+		Rendered: results,
 	}, nil
 }
 
