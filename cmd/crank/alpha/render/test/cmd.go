@@ -48,11 +48,9 @@ type Cmd struct {
 	WriteExpectedOutputs bool          `default:"false"                                                          help:"Write/update expected.yaml files instead of comparing." short:"w"`
 
 	// validation flags
-	CacheDir              string `default:"~/.crossplane/cache" help:"Absolute path to the cache directory where downloaded schemas are stored." predictor:"directory" group:"validation"`
-	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas." default:"false" group:"validation"`
-	ErrorOnMissingSchemas bool   `default:"false" help:"Return non zero exit code if not all schemas are provided." group:"validation"`
-	SkipSuccessResults    bool   `help:"Skip printing success results." group:"validation"`
-	Validate              bool   `default:"false" help:"Validate XR and managed resources based on their XRD and OpenAPI schemas" group:"validation"`
+	CacheDir   string `default:"~/.crossplane/cache" help:"Absolute path to the cache directory where downloaded schemas are stored." predictor:"directory" group:"validation"`
+	CleanCache bool   `help:"Clean the cache directory before downloading package schemas." default:"false" group:"validation"`
+	Validate   bool   `default:"false" help:"Validate XR and managed resources based on their XRD and OpenAPI schemas" group:"validation"`
 
 	fs afero.Fs
 }
@@ -156,10 +154,9 @@ func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) erro
 		// but this just uses the crossplane version based on build-args
 		// wont work properly in fork
 		// if not set, i want to get the latest tag here instead of pinning it
-		CrossplaneImage:       fmt.Sprintf("xpkg.crossplane.io/crossplane/crossplane:%s", "v2.1.3"),
-		CacheDir:              c.CacheDir,
-		ErrorOnMissingSchemas: c.ErrorOnMissingSchemas,
-		SkipSuccessResults:    c.SkipSuccessResults,
+		CrossplaneImage:    fmt.Sprintf("xpkg.crossplane.io/crossplane/crossplane:%s", "v2.1.3"),
+		CacheDir:           c.CacheDir,
+		SkipSuccessResults: true,
 	}
 
 	if err := cmd.AfterApply(); err != nil {
