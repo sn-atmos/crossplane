@@ -104,7 +104,24 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 
 	failure, missingSchemas := 0, 0
 
-	for _, r := range resources {
+	// deduplicate resources
+	seen := make(map[string]bool)
+	processedResources := []*unstructured.Unstructured{}
+	for _, resource := range resources {
+		name := resource.GetGenerateName()
+		if name == "" {
+			name = resource.GetName()
+		}
+		annotations := resource.GetAnnotations()
+
+		key := resource.GetAPIVersion() + resource.GetKind() + resource.GetAPIVersion() + name + annotations["crossplane.io/composition-resource-name"]
+		if !seen[key] {
+			seen[key] = true
+			processedResources = append(processedResources, resource)
+		}
+	}
+
+	for _, r := range processedResources {
 		gvk := r.GetObjectKind().GroupVersionKind()
 		sv, ok := schemaValidators[gvk]
 		s := structurals[gvk] // if we have a schema validator, we should also have a structural
@@ -163,7 +180,7 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 		}
 	}
 
-	if _, err := fmt.Fprintf(w, "Total %d resources: %d missing schemas, %d success cases, %d failure cases\n", len(resources), missingSchemas, len(resources)-failure-missingSchemas, failure); err != nil {
+	if _, err := fmt.Fprintf(w, "Total %d resources: %d missing schemas, %d success cases, %d failure cases\n", len(processedResources), missingSchemas, len(processedResources)-failure-missingSchemas, failure); err != nil {
 		return errors.Wrap(err, errWriteOutput)
 	}
 
