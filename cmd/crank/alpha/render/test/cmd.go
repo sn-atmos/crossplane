@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane/v2/cmd/crank/beta/validate"
 )
 
 // Cmd arguments and flags for alpha render test subcommand.
@@ -43,6 +46,11 @@ type Cmd struct {
 	PackageFile          string        `help:"Path to package file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"                                                             help:"How long to run before timing out."`
 	WriteExpectedOutputs bool          `default:"false"                                                          help:"Write/update expected.yaml files instead of comparing." short:"w"`
+
+	// validation flags
+	CacheDir   string `default:"~/.crossplane/cache" help:"Absolute path to the cache directory where downloaded schemas are stored." predictor:"directory" group:"validation"`
+	CleanCache bool   `help:"Clean the cache directory before downloading package schemas." default:"false" group:"validation"`
+	Validate   bool   `default:"false" help:"Validate XR and managed resources based on their XRD and OpenAPI schemas" group:"validation"`
 
 	fs afero.Fs
 }
@@ -98,7 +106,7 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run alpha render test.
-func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
+func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
@@ -120,8 +128,44 @@ func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 	if !result.Pass {
 		return errors.New("test failed: differences found between expected and actual outputs")
 	}
+
 	if !c.WriteExpectedOutputs {
 		_, _ = fmt.Fprintln(os.Stdout, "All tests passed")
+	}
+
+	if c.Validate {
+		log.Info("Validating XR and managed resources")
+		err := c.validate(k, log, result)
+		if err != nil {
+			return fmt.Errorf("validation failed: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) error {
+	cmd := validate.Cmd{
+		Extensions: filepath.Dir(c.PackageFile),
+		Resources:  strings.Join(result.TestDirs, ","),
+		CleanCache: c.CleanCache,
+		// todo - hardcoded value
+		// version.New().GetVersionString() exists,
+		// but this just uses the crossplane version based on build-args
+		// wont work properly in fork
+		// if not set, i want to get the latest tag here instead of pinning it
+		CrossplaneImage:    fmt.Sprintf("xpkg.crossplane.io/crossplane/crossplane:%s", "v2.1.3"),
+		CacheDir:           c.CacheDir,
+		SkipSuccessResults: true,
+	}
+
+	if err := cmd.AfterApply(); err != nil {
+		return err
+	}
+
+	err := cmd.Run(k, log)
+	if err != nil {
+		return err
 	}
 
 	return nil
