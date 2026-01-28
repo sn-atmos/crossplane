@@ -147,16 +147,16 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 }
 
 func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) error {
+	crossplaneVersion, err := resolvePackageVersion("xpkg.crossplane.io/crossplane/crossplane", ">v2.0.0")
+	if err != nil {
+		return fmt.Errorf("failed to resolve crossplane version: %v", err)
+	}
+
 	cmd := validate.Cmd{
-		Extensions: filepath.Dir(c.PackageFile),
-		Resources:  strings.Join(result.TestDirs, ","),
-		CleanCache: c.CleanCache,
-		// todo - hardcoded value
-		// version.New().GetVersionString() exists,
-		// but this just uses the crossplane version based on build-args
-		// wont work properly in fork
-		// if not set, i want to get the latest tag here instead of pinning it
-		CrossplaneImage:       fmt.Sprintf("xpkg.crossplane.io/crossplane/crossplane:%s", "v2.1.3"),
+		Extensions:            filepath.Dir(c.PackageFile),
+		Resources:             strings.Join(result.TestDirs, ","),
+		CleanCache:            c.CleanCache,
+		CrossplaneImage:       crossplaneVersion,
 		CacheDir:              c.CacheDir,
 		SkipSuccessResults:    true,
 		ErrorOnMissingSchemas: c.ErrorOnMissingSchemas,
@@ -166,7 +166,7 @@ func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) erro
 		return err
 	}
 
-	err := cmd.Run(k, log)
+	err = cmd.Run(k, log)
 	if err != nil {
 		return err
 	}
