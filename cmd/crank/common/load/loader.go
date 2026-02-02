@@ -214,6 +214,7 @@ func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error)
 			continue
 		}
 
+		// extract pipeline input resources
 		if u.GetObjectKind().GroupVersionKind() == v1.CompositionGroupVersionKind {
 			// Convert the unstructured resource to a Composition
 			var comp v1.Composition
