@@ -106,10 +106,6 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 
 	for _, r := range resources {
 		gvk := r.GetObjectKind().GroupVersionKind()
-		if gvk.Empty() {
-			// Dont validate resources without gvk
-			continue
-		}
 		sv, ok := schemaValidators[gvk]
 		s := structurals[gvk] // if we have a schema validator, we should also have a structural
 
