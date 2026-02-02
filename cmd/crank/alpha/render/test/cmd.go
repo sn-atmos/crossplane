@@ -137,8 +137,7 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 
 	if c.Validate {
 		log.Info("Validating XR and managed resources")
-		err := c.validate(k, log, result)
-		if err != nil {
+		if err := c.validate(k, log, result); err != nil {
 			return fmt.Errorf("validation failed: %v", err)
 		}
 	}
@@ -166,8 +165,7 @@ func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) erro
 		return err
 	}
 
-	err = cmd.Run(k, log)
-	if err != nil {
+	if err := cmd.Run(k, log); err != nil {
 		return err
 	}
 
