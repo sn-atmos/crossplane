@@ -58,6 +58,8 @@ const (
 	ExtraResourcesFileName = "extra-resources.yaml"
 	// ObservedResourcesFileName is the name of the file containing observed resources.
 	ObservedResourcesFileName = "observed-resources.yaml"
+	// RequiredResourcesFileName is the name of the file containing required resources.
+	RequiredResourcesFileName = "required-resources.yaml"
 	// tmpCleanupAnnotation temporarily stores potential function cleanup annotation during test runs.
 	tmpCleanupAnnotation = "internal." + render.AnnotationKeyRuntimeDockerCleanup
 )
@@ -586,6 +588,10 @@ func loadOptionalResources(filesystem afero.Fs, dir string, renderInputs *render
 		return err
 	}
 
+	if err := loadRequiredResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
 	return loadContexts(filesystem, dir, renderInputs, log)
 }
 
@@ -626,6 +632,26 @@ func loadObservedResources(filesystem afero.Fs, dir string, renderInputs *render
 	}
 	renderInputs.ObservedResources = observedResources
 	log.Debug("Loaded observed resources", "path", observedResourcesPath)
+	return nil
+}
+
+// loadRequiredResources loads optional required resources from required-resources.yaml.
+func loadRequiredResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	requiredResourcesPath := filepath.Join(dir, RequiredResourcesFileName)
+	exists, err := afero.Exists(filesystem, requiredResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if required resources file exists at %q", requiredResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	requiredResources, err := render.LoadRequiredResources(filesystem, requiredResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load required resources from %q", requiredResourcesPath)
+	}
+	renderInputs.RequiredResources = requiredResources
+	log.Debug("Loaded required resources", "path", requiredResourcesPath)
 	return nil
 }
 
