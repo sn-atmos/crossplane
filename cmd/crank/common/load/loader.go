@@ -209,7 +209,7 @@ func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error)
 			return nil, errors.Wrap(err, "cannot parse YAML manifest")
 		}
 
-		// skip empty documents (empty files, or documents containing only comment)
+		// skip empty documents (empty files, or documents containing only comments)
 		if len(u.Object) == 0 {
 			continue
 		}
