@@ -157,7 +157,7 @@ func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) erro
 		CleanCache:            c.CleanCache,
 		CrossplaneImage:       crossplaneVersion,
 		CacheDir:              c.CacheDir,
-		SkipSuccessResults:    true,
+		SkipSuccessResults:    c.SkipSuccessResults,
 		ErrorOnMissingSchemas: c.ErrorOnMissingSchemas,
 	}
 
