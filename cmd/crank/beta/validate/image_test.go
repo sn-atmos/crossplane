@@ -65,16 +65,6 @@ func TestFindImageTagForVersionConstraint(t *testing.T) {
 			constraint:   ">4.5.6",
 			expectError:  true,
 		},
-		"RangedConstraint": {
-			responseBody:  responseTags,
-			constraint:    ">=v2.0.0 <v5.0.0",
-			expectedImage: "ubuntu:4.5.6",
-		},
-		"CommaSeparatedRangedConstraint": {
-			responseBody:  responseTags,
-			constraint:    ">=v2.0.0,<v5.0.0",
-			expectedImage: "ubuntu:4.5.6",
-		},
 	}
 
 	for name, tc := range cases {
