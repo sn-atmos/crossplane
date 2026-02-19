@@ -151,6 +151,10 @@ func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) erro
 		return fmt.Errorf("failed to resolve crossplane version: %v", err)
 	}
 
+	if len(c.PackageFile) == 0 {
+		return fmt.Errorf("--package-file is required when validate is set")
+	}
+
 	cmd := validate.Cmd{
 		Extensions:            filepath.Dir(c.PackageFile),
 		Resources:             strings.Join(result.TestDirs, ","),
