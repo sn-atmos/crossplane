@@ -48,7 +48,7 @@ type Cmd struct {
 	WriteExpectedOutputs bool          `default:"false"                                                          help:"Write/update expected.yaml files instead of comparing." short:"w"`
 
 	// validation flags
-	CacheDir              string `default:"~/.crossplane/cache" help:"Absolute path to the cache directory where downloaded schemas are stored." predictor:"directory" group:"validation"`
+	CacheDir              string `default:"~/.crossplane/cache" help:"Path to the cache directory where downloaded schemas are stored. May include ~ for the home directory." predictor:"directory" group:"validation"`
 	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas." default:"false" group:"validation"`
 	ErrorOnMissingSchemas bool   `default:"false" help:"Return non zero exit code if not all schemas are provided." group:"validation"`
 	SkipSuccessResults    bool   `help:"Skip printing success results." group:"validation"`
