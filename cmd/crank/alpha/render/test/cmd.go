@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane/v2/cmd/crank/beta/validate"
 )
 
 // Cmd arguments and flags for alpha render test subcommand.
@@ -43,6 +46,13 @@ type Cmd struct {
 	PackageFile          string        `help:"Path to package file for resolving function versions."`
 	Timeout              time.Duration `default:"1m"                                                             help:"How long to run before timing out."`
 	WriteExpectedOutputs bool          `default:"false"                                                          help:"Write/update expected.yaml files instead of comparing." short:"w"`
+
+	// validation flags
+	CacheDir              string `default:"~/.crossplane/cache" help:"Path to the cache directory where downloaded schemas are stored. May include ~ for the home directory." predictor:"directory" group:"validation"`
+	CleanCache            bool   `help:"Clean the cache directory before downloading package schemas." default:"false" group:"validation"`
+	ErrorOnMissingSchemas bool   `default:"false" help:"Return non zero exit code if not all schemas are provided." group:"validation"`
+	SkipSuccessResults    bool   `help:"Skip printing success results." group:"validation"`
+	Validate              bool   `default:"false" help:"Validate XR and managed resources based on their XRD and OpenAPI schemas" group:"validation"`
 
 	fs afero.Fs
 }
@@ -98,7 +108,7 @@ func (c *Cmd) AfterApply() error {
 }
 
 // Run alpha render test.
-func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
+func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
@@ -122,6 +132,44 @@ func (c *Cmd) Run(_ *kong.Context, log logging.Logger) error {
 	}
 	if !c.WriteExpectedOutputs {
 		_, _ = fmt.Fprintln(os.Stdout, "All tests passed")
+	}
+
+	if c.Validate {
+		log.Info("Validating XR and managed resources")
+		if err := c.validate(k, log, result); err != nil {
+			return fmt.Errorf("validation failed: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) error {
+	crossplaneVersion, err := resolvePackageVersion("xpkg.crossplane.io/crossplane/crossplane", ">v2.0.0")
+	if err != nil {
+		return fmt.Errorf("failed to resolve crossplane version: %v", err)
+	}
+
+	if len(c.PackageFile) == 0 {
+		return fmt.Errorf("--package-file is required when validate is set")
+	}
+
+	cmd := validate.Cmd{
+		Extensions:            filepath.Dir(c.PackageFile),
+		Resources:             strings.Join(result.TestDirs, ","),
+		CleanCache:            c.CleanCache,
+		CrossplaneImage:       crossplaneVersion,
+		CacheDir:              c.CacheDir,
+		SkipSuccessResults:    c.SkipSuccessResults,
+		ErrorOnMissingSchemas: c.ErrorOnMissingSchemas,
+	}
+
+	if err := cmd.AfterApply(); err != nil {
+		return err
+	}
+
+	if err := cmd.Run(k, log); err != nil {
+		return err
 	}
 
 	return nil
