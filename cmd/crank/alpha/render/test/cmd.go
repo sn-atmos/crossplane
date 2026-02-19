@@ -130,7 +130,6 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	if !result.Pass {
 		return errors.New("test failed: differences found between expected and actual outputs")
 	}
-
 	if !c.WriteExpectedOutputs {
 		_, _ = fmt.Fprintln(os.Stdout, "All tests passed")
 	}
