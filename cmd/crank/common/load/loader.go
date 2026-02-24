@@ -148,7 +148,7 @@ type FolderLoader struct {
 
 // Load reads the contents from all files in a folder.
 func (f *FolderLoader) Load() ([]Resource, error) {
-	var stream [][]byte
+	var resources []Resource
 
 	err := filepath.Walk(f.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -161,7 +161,12 @@ func (f *FolderLoader) Load() ([]Resource, error) {
 				return err
 			}
 
-			stream = append(stream, s...)
+			fileResources, err := streamToResources(s, path)
+			if err != nil {
+				return errors.Wrapf(err, "cannot parse resources from %s", path)
+			}
+
+			resources = append(resources, fileResources...)
 		}
 
 		return nil
@@ -170,7 +175,7 @@ func (f *FolderLoader) Load() ([]Resource, error) {
 		return nil, errors.Wrap(err, "cannot read folder")
 	}
 
-	return streamToResources(stream, f.path)
+	return resources, nil
 }
 
 func isYamlFile(info os.FileInfo) bool {
