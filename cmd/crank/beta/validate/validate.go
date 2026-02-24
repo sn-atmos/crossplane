@@ -147,7 +147,7 @@ func SchemaValidation(ctx context.Context, resources []load.Resource, crds []*ex
 			for _, e := range re {
 				rf++
 
-				if _, err := fmt.Fprintf(w, "[x] CEL validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r.Unstructured), e.Error()); err != nil {
+				if _, err := fmt.Fprintf(w, "[x] (%s) CEL validation error %s, %s : %s\n", r.Source, r.GroupVersionKind().String(), getResourceName(r.Unstructured), e.Error()); err != nil {
 					return errors.Wrap(err, errWriteOutput)
 				}
 			}
