@@ -32,6 +32,8 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 )
 
 var (
@@ -141,7 +143,7 @@ var (
 
 func TestConvertToCRDs(t *testing.T) {
 	type args struct {
-		schemas []*unstructured.Unstructured
+		schemas []load.Resource
 	}
 
 	type want struct {
@@ -157,8 +159,8 @@ func TestConvertToCRDs(t *testing.T) {
 		"UnstructuredCRD": {
 			reason: "Should convert an unstructured CRD to a CustomResourceDefinition",
 			args: args{
-				schemas: []*unstructured.Unstructured{
-					{
+				schemas: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "apiextensions.k8s.io/v1",
 							"kind":       "CustomResourceDefinition",
@@ -201,7 +203,7 @@ func TestConvertToCRDs(t *testing.T) {
 								},
 							},
 						},
-					},
+					}, ""),
 				},
 			},
 			want: want{
@@ -213,8 +215,8 @@ func TestConvertToCRDs(t *testing.T) {
 		"UnstructuredXRD": {
 			reason: "Should convert an unstructured XRD to a CustomResourceDefinition",
 			args: args{
-				schemas: []*unstructured.Unstructured{
-					{
+				schemas: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "apiextensions.crossplane.io/v1alpha1",
 							"kind":       "CompositeResourceDefinition",
@@ -261,7 +263,7 @@ func TestConvertToCRDs(t *testing.T) {
 								},
 							},
 						},
-					},
+					}, ""),
 				},
 			},
 			want: want{
@@ -517,8 +519,8 @@ func TestConvertToCRDs(t *testing.T) {
 		"UnstructuredXRDWithClaim": {
 			reason: "Should convert an unstructured XRD to a CustomResourceDefinition",
 			args: args{
-				schemas: []*unstructured.Unstructured{
-					{
+				schemas: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "apiextensions.crossplane.io/v1alpha1",
 							"kind":       "CompositeResourceDefinition",
@@ -569,7 +571,7 @@ func TestConvertToCRDs(t *testing.T) {
 								},
 							},
 						},
-					},
+					}, ""),
 				},
 			},
 			want: want{
@@ -1041,8 +1043,8 @@ func TestConvertToCRDs(t *testing.T) {
 		"WrongKind": {
 			reason: "Should skip an unstructured object that is not a CRD or XRD",
 			args: args{
-				schemas: []*unstructured.Unstructured{
-					{
+				schemas: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "apiextensions.k8s.io/v1",
 							"kind":       "WrongKind",
@@ -1050,7 +1052,7 @@ func TestConvertToCRDs(t *testing.T) {
 								"name": "test",
 							},
 						},
-					},
+					}, ""),
 				},
 			},
 			want: want{
@@ -1078,7 +1080,7 @@ func TestConvertToCRDs(t *testing.T) {
 
 func TestValidateResources(t *testing.T) {
 	type args struct {
-		resources             []*unstructured.Unstructured
+		resources             []load.Resource
 		crds                  []*extv1.CustomResourceDefinition
 		errorOnMissingSchemas bool
 	}
@@ -1095,8 +1097,8 @@ func TestValidateResources(t *testing.T) {
 		"Valid": {
 			reason: "Should not return an error if the resources are valid",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1107,7 +1109,7 @@ func TestValidateResources(t *testing.T) {
 								"replicas": 1,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{
 					testCRD,
@@ -1117,8 +1119,8 @@ func TestValidateResources(t *testing.T) {
 		"ValidWithCEL": {
 			reason: "Should not return an error if the resources are valid",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1131,7 +1133,7 @@ func TestValidateResources(t *testing.T) {
 								"maxReplicas": 10,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{
 					testCRDWithCEL,
@@ -1141,8 +1143,8 @@ func TestValidateResources(t *testing.T) {
 		"ValidWithMissingSchemasEnabled": {
 			reason: "Should not return an error if the resources are valid and schemas are not missing",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1153,7 +1155,7 @@ func TestValidateResources(t *testing.T) {
 								"replicas": 1,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{
 					testCRD,
@@ -1164,8 +1166,8 @@ func TestValidateResources(t *testing.T) {
 		"ErrorOnMissingSchemas": {
 			reason: "Should return an error if schemas are missing",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1176,7 +1178,7 @@ func TestValidateResources(t *testing.T) {
 								"replicas": 1,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds:                  []*extv1.CustomResourceDefinition{},
 				errorOnMissingSchemas: true,
@@ -1188,8 +1190,8 @@ func TestValidateResources(t *testing.T) {
 		"Invalid": {
 			reason: "Should return an error if the resources are invalid",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1200,7 +1202,7 @@ func TestValidateResources(t *testing.T) {
 								"replicas": "non-integer",
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{
 					testCRD,
@@ -1213,8 +1215,8 @@ func TestValidateResources(t *testing.T) {
 		"InvalidWithCEL": {
 			reason: "Should not return an error if the resources are valid",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1227,7 +1229,7 @@ func TestValidateResources(t *testing.T) {
 								"maxReplicas": 10,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{
 					testCRDWithCEL,
@@ -1240,8 +1242,8 @@ func TestValidateResources(t *testing.T) {
 		"MissingCRD": {
 			reason: "Should not return an error if the CRD/XRD is missing",
 			args: args{
-				resources: []*unstructured.Unstructured{
-					{
+				resources: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "test.org/v1alpha1",
 							"kind":       "Test",
@@ -1252,7 +1254,7 @@ func TestValidateResources(t *testing.T) {
 								"replicas": 1,
 							},
 						},
-					},
+					}, ""),
 				},
 				crds: []*extv1.CustomResourceDefinition{},
 			},

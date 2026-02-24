@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 )
 
 var (
@@ -136,7 +138,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 	}
 
 	type args struct {
-		extensions []*unstructured.Unstructured
+		extensions []load.Resource
 		fetchMock  func(image string) (*conregv1.Layer, error)
 	}
 
@@ -156,8 +158,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 			// └─►provider-dep-1
 			reason: "All dependencies should be successfully added from Configuration.pkg",
 			args: args{
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -168,7 +170,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								"package": "config-pkg:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				fetchMock: fetchMockFunc,
 			},
@@ -183,8 +185,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 			// └─►function-dep-1
 			reason: "All dependencies should be successfully added from Configuration.meta",
 			args: args{
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "meta.pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -200,7 +202,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								},
 							},
 						},
-					},
+					}, ""),
 				},
 				fetchMock: fetchMockFunc,
 			},
@@ -217,8 +219,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 			// └─►provider-dep-1
 			reason: "All dependencies should be successfully added from both Configuration.meta and Configuration.pkg",
 			args: args{
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "meta.pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -242,8 +244,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								},
 							},
 						},
-					},
-					{
+					}, ""),
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -254,7 +256,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								"package": "config-pkg:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				fetchMock: fetchMockFunc,
 			},
@@ -268,8 +270,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 			// function-test
 			reason: "Function pkg added",
 			args: args{
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1",
 							"kind":       "Function",
@@ -280,7 +282,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								"package": "function-test:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				fetchMock: fetchMockFunc,
 			},
@@ -294,8 +296,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 			// function-test
 			reason: "Function pkg added",
 			args: args{
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1",
 							"kind":       "Function",
@@ -306,8 +308,8 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								"package": "function-test:v1.3.0",
 							},
 						},
-					},
-					{
+					}, ""),
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1",
 							"kind":       "Function",
@@ -318,7 +320,7 @@ func TestConfigurationTypeSupport(t *testing.T) {
 								"package": "function-dep-1:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				fetchMock: fetchMockFunc,
 			},
@@ -393,7 +395,7 @@ func TestAddDependencies(t *testing.T) {
 	}
 
 	type args struct {
-		extensions      []*unstructured.Unstructured
+		extensions      []load.Resource
 		fetcher         ImageFetcher
 		crossplaneImage string
 	}
@@ -421,8 +423,8 @@ func TestAddDependencies(t *testing.T) {
 					fetchBaseLayer: fetchMockFunc,
 					fetchImage:     fetchImageMockFunc,
 				},
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -433,7 +435,7 @@ func TestAddDependencies(t *testing.T) {
 								"package": "config-dep-1:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				crossplaneImage: "xpkg.crossplane.io/crossplane/crossplane:v1.16.0",
 			},
@@ -451,8 +453,8 @@ func TestAddDependencies(t *testing.T) {
 			reason: "All dependencies should be successfully fetched and added without specifying a crossplane image",
 			args: args{
 				fetcher: &MockFetcher{fetchMockFunc, nil},
-				extensions: []*unstructured.Unstructured{
-					{
+				extensions: []load.Resource{
+					load.NewResource(&unstructured.Unstructured{
 						Object: map[string]any{
 							"apiVersion": "pkg.crossplane.io/v1alpha1",
 							"kind":       "Configuration",
@@ -463,7 +465,7 @@ func TestAddDependencies(t *testing.T) {
 								"package": "config-dep-1:v1.3.0",
 							},
 						},
-					},
+					}, ""),
 				},
 				crossplaneImage: "",
 			},

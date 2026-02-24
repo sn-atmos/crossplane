@@ -499,7 +499,7 @@ spec:
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := streamToUnstructured(tc.args.stream)
+			got, err := streamToResources(tc.args.stream, "")
 			if diff := cmp.Diff(tc.want.resources, got); diff != "" {
 				t.Errorf("%s\nstreamToUnstructured(...): -want, +got:\n%s", tc.reason, diff)
 			}

@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"github.com/spf13/afero"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
@@ -34,7 +33,7 @@ type Cache interface {
 	Store(schemas [][]byte, path string) error
 	Flush() error
 	Init() error
-	Load(image string) ([]*unstructured.Unstructured, error)
+	Load(image string) ([]load.Resource, error)
 	Exists(image string) (string, error)
 }
 
@@ -90,7 +89,7 @@ func (c *LocalCache) Flush() error {
 
 // Load loads schemas from the cache directory.
 // image should be a validate image name with the format: <registry>/<image>:<tag>.
-func (c *LocalCache) Load(img string) ([]*unstructured.Unstructured, error) {
+func (c *LocalCache) Load(img string) ([]load.Resource, error) {
 	image, err := findImageTagForVersionConstraint(img)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot resolve image tag for %s", img)

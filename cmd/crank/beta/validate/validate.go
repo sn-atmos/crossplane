@@ -33,6 +33,7 @@ import (
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 
 	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
@@ -96,7 +97,7 @@ func newValidatorsAndStructurals(crds []*extv1.CustomResourceDefinition) (map[ru
 }
 
 // SchemaValidation validates the resources against the given CRDs.
-func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructured, crds []*extv1.CustomResourceDefinition, errorOnMissingSchemas bool, skipSuccessLogs bool, w io.Writer) error { //nolint:gocognit // printing the output increases the cyclomatic complexity a little bit
+func SchemaValidation(ctx context.Context, resources []load.Resource, crds []*extv1.CustomResourceDefinition, errorOnMissingSchemas bool, skipSuccessLogs bool, w io.Writer) error { //nolint:gocognit // printing the output increases the cyclomatic complexity a little bit
 	schemaValidators, structurals, err := newValidatorsAndStructurals(crds)
 	if err != nil {
 		return errors.Wrap(err, "cannot create schema validators")
@@ -119,8 +120,8 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 			continue
 		}
 
-		if err := applyDefaults(r, gvk, crds); err != nil {
-			if _, err := fmt.Fprintf(w, "[!] failed to apply defaults for %s, %s: %v\n", r.GroupVersionKind().String(), getResourceName(r), err); err != nil {
+		if err := applyDefaults(r.Unstructured, gvk, crds); err != nil {
+			if _, err := fmt.Fprintf(w, "[!] failed to apply defaults for %s, %s: %v\n", r.GroupVersionKind().String(), getResourceName(r.Unstructured), err); err != nil {
 				return errors.Wrap(err, errWriteOutput)
 			}
 		}
@@ -135,7 +136,7 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 			for _, e := range re {
 				rf++
 
-				if _, err := fmt.Fprintf(w, "[x] schema validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r), e.Error()); err != nil {
+				if _, err := fmt.Fprintf(w, "[x] (%s) schema validation error %s: %s, %s\n", r.Source, r.GroupVersionKind().String(), getResourceName(r.Unstructured), e.Error()); err != nil {
 					return errors.Wrap(err, errWriteOutput)
 				}
 			}
@@ -146,14 +147,14 @@ func SchemaValidation(ctx context.Context, resources []*unstructured.Unstructure
 			for _, e := range re {
 				rf++
 
-				if _, err := fmt.Fprintf(w, "[x] CEL validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r), e.Error()); err != nil {
+				if _, err := fmt.Fprintf(w, "[x] CEL validation error %s, %s : %s\n", r.GroupVersionKind().String(), getResourceName(r.Unstructured), e.Error()); err != nil {
 					return errors.Wrap(err, errWriteOutput)
 				}
 			}
 
 			if rf == 0 {
 				if !skipSuccessLogs {
-					if _, err := fmt.Fprintf(w, "[✓] %s, %s validated successfully\n", r.GroupVersionKind().String(), getResourceName(r)); err != nil {
+					if _, err := fmt.Fprintf(w, "[✓] %s, %s validated successfully\n", r.GroupVersionKind().String(), getResourceName(r.Unstructured)); err != nil {
 						return errors.Wrap(err, errWriteOutput)
 					}
 				}

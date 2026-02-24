@@ -37,7 +37,20 @@ import (
 
 // Loader interface defines the contract for different input sources.
 type Loader interface {
-	Load() ([]*unstructured.Unstructured, error)
+	Load() ([]Resource, error)
+}
+
+type Resource struct {
+	*unstructured.Unstructured
+	Source string
+}
+
+// NewResource creates a new Resource with the given unstructured object and source.
+func NewResource(u *unstructured.Unstructured, source string) Resource {
+	return Resource{
+		Unstructured: u,
+		Source:       source,
+	}
 }
 
 // NewLoader returns a Loader based on the input source.
@@ -85,8 +98,8 @@ type MultiLoader struct {
 }
 
 // Load reads and merges the content from the loaders.
-func (m *MultiLoader) Load() ([]*unstructured.Unstructured, error) {
-	var manifests []*unstructured.Unstructured
+func (m *MultiLoader) Load() ([]Resource, error) {
+	var resources []Resource
 
 	for i, loader := range m.loaders {
 		output, err := loader.Load()
@@ -94,23 +107,23 @@ func (m *MultiLoader) Load() ([]*unstructured.Unstructured, error) {
 			return nil, errors.Wrap(err, fmt.Sprintf("cannot load source at position %d", i))
 		}
 
-		manifests = append(manifests, output...)
+		resources = append(resources, output...)
 	}
 
-	return manifests, nil
+	return resources, nil
 }
 
 // StdinLoader implements the Loader interface for reading from stdin.
 type StdinLoader struct{}
 
 // Load reads the contents from stdin.
-func (s *StdinLoader) Load() ([]*unstructured.Unstructured, error) {
+func (s *StdinLoader) Load() ([]Resource, error) {
 	stream, err := YamlStream(os.Stdin)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot load YAML stream from stdin")
 	}
 
-	return streamToUnstructured(stream)
+	return streamToResources(stream, "stdin")
 }
 
 // FileLoader implements the Loader interface for reading from a file and converting input to unstructured objects.
@@ -119,13 +132,13 @@ type FileLoader struct {
 }
 
 // Load reads the contents from a file.
-func (f *FileLoader) Load() ([]*unstructured.Unstructured, error) {
+func (f *FileLoader) Load() ([]Resource, error) {
 	stream, err := readFile(f.path)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot read file")
 	}
 
-	return streamToUnstructured(stream)
+	return streamToResources(stream, f.path)
 }
 
 // FolderLoader implements the Loader interface for reading from a folder.
@@ -134,7 +147,7 @@ type FolderLoader struct {
 }
 
 // Load reads the contents from all files in a folder.
-func (f *FolderLoader) Load() ([]*unstructured.Unstructured, error) {
+func (f *FolderLoader) Load() ([]Resource, error) {
 	var stream [][]byte
 
 	err := filepath.Walk(f.path, func(path string, info os.FileInfo, err error) error {
@@ -157,7 +170,7 @@ func (f *FolderLoader) Load() ([]*unstructured.Unstructured, error) {
 		return nil, errors.Wrap(err, "cannot read folder")
 	}
 
-	return streamToUnstructured(stream)
+	return streamToResources(stream, f.path)
 }
 
 func isYamlFile(info os.FileInfo) bool {
@@ -200,12 +213,15 @@ func YamlStream(r io.Reader) ([][]byte, error) {
 	return stream, nil
 }
 
-func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error) {
-	manifests := make([]*unstructured.Unstructured, 0, len(stream))
+func streamToResources(stream [][]byte, location string) ([]Resource, error) {
+	manifests := make([]Resource, 0, len(stream))
 
 	for _, y := range stream {
-		u := &unstructured.Unstructured{}
-		if err := yaml.Unmarshal(y, u); err != nil {
+		u := Resource{
+			Unstructured: &unstructured.Unstructured{},
+			Source:       location,
+		}
+		if err := yaml.Unmarshal(y, u.Unstructured); err != nil {
 			return nil, errors.Wrap(err, "cannot parse YAML manifest")
 		}
 
@@ -233,10 +249,13 @@ func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error)
 					if err != nil {
 						return nil, errors.Wrap(err, "failed to unmarshal raw input")
 					}
-
-					newInputResource := &unstructured.Unstructured{
-						Object: inputMap,
+					newInputResource := Resource{
+						Unstructured: &unstructured.Unstructured{
+							Object: inputMap,
+						},
+						Source: location,
 					}
+
 					// Add the input as new manifest to the manifests slice that we can validate
 					manifests = append(manifests, newInputResource)
 				}
@@ -292,13 +311,13 @@ func NewCompositeLoader(sources []string) (Loader, error) {
 
 // Load implements the Loader interface by loading from all contained loaders
 // and combining the results.
-func (c *CompositeLoader) Load() ([]*unstructured.Unstructured, error) {
+func (c *CompositeLoader) Load() ([]Resource, error) {
 	if len(c.loaders) == 0 {
 		return nil, errors.New("no loaders configured")
 	}
 
 	// Combine results from all loaders
-	var allResources []*unstructured.Unstructured
+	var allResources []Resource
 
 	for _, loader := range c.loaders {
 		resources, err := loader.Load()

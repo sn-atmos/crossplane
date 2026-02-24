@@ -23,7 +23,6 @@ import (
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
@@ -32,6 +31,7 @@ import (
 
 	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
 	metav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
@@ -91,7 +91,7 @@ func NewManager(cacheDir string, fs afero.Fs, w io.Writer, opts ...Option) *Mana
 }
 
 // PrepExtensions converts the unstructured XRDs/CRDs to CRDs and extract package images to add as a dependency.
-func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error { //nolint:gocognit // the function itself is not that complex, it just has different cases
+func (m *Manager) PrepExtensions(extensions []load.Resource) error { //nolint:gocognit // the function itself is not that complex, it just has different cases
 	for _, e := range extensions {
 		switch e.GroupVersionKind().GroupKind() {
 		case schema.GroupKind{Group: "apiextensions.k8s.io", Kind: "CustomResourceDefinition"}:
@@ -358,8 +358,8 @@ func (m *Manager) cacheDependencies() error {
 	return nil
 }
 
-func (m *Manager) loadDependencies() ([]*unstructured.Unstructured, error) {
-	schemas := make([]*unstructured.Unstructured, 0)
+func (m *Manager) loadDependencies() ([]load.Resource, error) {
+	schemas := make([]load.Resource, 0)
 
 	for dep := range m.deps {
 		cachedSchema, err := m.cache.Load(dep)
