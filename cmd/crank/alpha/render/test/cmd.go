@@ -20,17 +20,22 @@ package test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane/v2/cmd/crank/beta/validate"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
+	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // Cmd arguments and flags for alpha render test subcommand.
@@ -53,6 +58,7 @@ type Cmd struct {
 	ErrorOnMissingSchemas bool   `default:"false" help:"Return non zero exit code if not all schemas are provided." group:"validation"`
 	SkipSuccessResults    bool   `help:"Skip printing success results." group:"validation"`
 	Validate              bool   `default:"false" help:"Validate XR and managed resources based on their XRD and OpenAPI schemas" group:"validation"`
+	CrossplaneImage       string `help:"Specify the Crossplane image to be used for validating the built-in schemas." group:"validation"`
 
 	fs afero.Fs
 }
@@ -112,6 +118,21 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
+	if c.Validate {
+		log.Info("Validating XR and managed resources")
+
+		testDirs, err := findTestDirectories(c.fs, c.TestDir)
+		if err != nil {
+			return fmt.Errorf("failed to find test directories: %v", err)
+		}
+
+		if err := c.validate(k, testDirs); err != nil {
+			return fmt.Errorf("validation failed: %v", err)
+		}
+
+		return nil
+	}
+
 	// Run the test
 	result, err := Test(ctx, log, Inputs{
 		TestDir:              c.TestDir,
@@ -130,47 +151,122 @@ func (c *Cmd) Run(k *kong.Context, log logging.Logger) error {
 	if !result.Pass {
 		return errors.New("test failed: differences found between expected and actual outputs")
 	}
+
 	if !c.WriteExpectedOutputs {
 		_, _ = fmt.Fprintln(os.Stdout, "All tests passed")
-	}
-
-	if c.Validate {
-		log.Info("Validating XR and managed resources")
-		if err := c.validate(k, log, result); err != nil {
-			return fmt.Errorf("validation failed: %v", err)
-		}
 	}
 
 	return nil
 }
 
-func (c *Cmd) validate(k *kong.Context, log logging.Logger, result Outputs) error {
-	crossplaneVersion, err := resolvePackageVersion("xpkg.crossplane.io/crossplane/crossplane", ">v2.0.0")
-	if err != nil {
-		return fmt.Errorf("failed to resolve crossplane version: %v", err)
+type ResourceWithSource struct {
+	unstructured.Unstructured
+	Source string
+}
+
+func (c *Cmd) validate(k *kong.Context, testDirs []string) error {
+	crossplaneImage := c.CrossplaneImage
+	if crossplaneImage == "" {
+		resolvedCrossplaneImage, err := resolvePackageVersion("xpkg.crossplane.io/crossplane/crossplane", ">v2.0.0")
+		if err != nil {
+			return fmt.Errorf("failed to resolve crossplane version: %v", err)
+		}
+
+		crossplaneImage = resolvedCrossplaneImage
 	}
 
 	if len(c.PackageFile) == 0 {
 		return fmt.Errorf("--package-file is required when validate is set")
 	}
 
-	cmd := validate.Cmd{
-		Extensions:            filepath.Dir(c.PackageFile),
-		Resources:             strings.Join(result.TestDirs, ","),
-		CleanCache:            c.CleanCache,
-		CrossplaneImage:       crossplaneVersion,
-		CacheDir:              c.CacheDir,
-		SkipSuccessResults:    c.SkipSuccessResults,
-		ErrorOnMissingSchemas: c.ErrorOnMissingSchemas,
+	// Load all extensions
+	ext := filepath.Dir(c.PackageFile)
+	extensionLoader, err := load.NewLoader(ext)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load extensions from %q", ext)
 	}
 
-	if err := cmd.AfterApply(); err != nil {
-		return err
+	extensions, err := extensionLoader.Load()
+	if err != nil {
+		return errors.Wrapf(err, "cannot load extensions from %q", ext)
 	}
 
-	if err := cmd.Run(k, log); err != nil {
-		return err
+	if strings.HasPrefix(c.CacheDir, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		c.CacheDir = filepath.Join(homeDir, c.CacheDir[2:])
+	}
+
+	m := validate.NewManager(c.CacheDir, c.fs, k.Stdout, validate.WithCrossplaneImage(crossplaneImage))
+
+	// Convert XRDs/CRDs to CRDs and add package dependencies
+	if err := m.PrepExtensions(extensions); err != nil {
+		return errors.Wrapf(err, "cannot prepare extensions")
+	}
+
+	// Download package base layers to cache and load them as CRDs
+	if err := m.CacheAndLoad(c.CleanCache); err != nil {
+		return errors.Wrapf(err, "cannot download and load cache")
+	}
+
+	var (
+		crds             = m.CRDs()
+		validationErrors []string
+		wg               sync.WaitGroup
+		mu               sync.Mutex
+	)
+
+	for _, testDir := range testDirs {
+		wg.Go(func() {
+			if err := c.validateResource(filepath.Join(testDir, c.OutputFile), crds, k.Stdout); err != nil {
+				mu.Lock()
+				validationErrors = append(validationErrors, fmt.Sprintf("%s: %v", testDir, err))
+				mu.Unlock()
+			}
+		})
+
+		wg.Wait()
+	}
+
+	if len(validationErrors) > 0 {
+		return errors.New(strings.Join(validationErrors, "\n"))
 	}
 
 	return nil
+}
+
+func (c Cmd) validateResource(path string, crds []*apiextv1.CustomResourceDefinition, out io.Writer) error {
+	loader, err := load.NewLoader(path)
+	if err != nil {
+		return fmt.Errorf("failed to setup new loader: %v", err)
+	}
+
+	resources, err := loader.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load resources: %v", err)
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		if relativePath, err := filepath.Rel(cwd, path); err == nil {
+			path = relativePath
+		}
+	}
+
+	return validate.SchemaValidation(
+		context.Background(),
+		resources,
+		crds,
+		c.ErrorOnMissingSchemas,
+		c.SkipSuccessResults,
+		&prefixWriter{w: out, prefix: fmt.Sprintf("[%s] ", path)},
+	)
+}
+
+type prefixWriter struct {
+	w      io.Writer
+	prefix string
+}
+
+func (p *prefixWriter) Write(b []byte) (int, error) {
+	_, err := fmt.Fprintf(p.w, "%s%s", p.prefix, b)
+	return len(b), err
 }
