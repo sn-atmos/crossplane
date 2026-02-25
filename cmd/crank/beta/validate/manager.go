@@ -372,3 +372,7 @@ func (m *Manager) loadDependencies() ([]*unstructured.Unstructured, error) {
 
 	return schemas, nil
 }
+
+func (m Manager) CRDs() []*extv1.CustomResourceDefinition {
+	return m.crds
+}
