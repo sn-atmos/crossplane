@@ -208,6 +208,12 @@ func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error)
 		if err := yaml.Unmarshal(y, u); err != nil {
 			return nil, errors.Wrap(err, "cannot parse YAML manifest")
 		}
+
+		// skip empty documents (empty files, or documents containing only comments)
+		if len(u.Object) == 0 {
+			continue
+		}
+
 		// extract pipeline input resources
 		if u.GetObjectKind().GroupVersionKind() == v1.CompositionGroupVersionKind {
 			// Convert the unstructured resource to a Composition
@@ -221,7 +227,7 @@ func streamToUnstructured(stream [][]byte) ([]*unstructured.Unstructured, error)
 			for _, step := range comp.Spec.Pipeline {
 				// Create a new resource based on the input (we can use it for validation)
 				if step.Input != nil && step.Input.Raw != nil {
-					var inputMap map[string]interface{}
+					var inputMap map[string]any
 
 					err := json.Unmarshal(step.Input.Raw, &inputMap)
 					if err != nil {

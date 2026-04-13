@@ -1,0 +1,711 @@
+/*
+Copyright 2025 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package test
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/gonvenience/ytbx"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/homeport/dyff/pkg/dyff"
+	"github.com/spf13/afero"
+	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8syaml "sigs.k8s.io/yaml"
+
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
+	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/cmd/crank/render"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
+)
+
+const (
+	// CompositeFileName is the name of the file containing the composite resource.
+	CompositeFileName = "composite-resource.yaml"
+	// ExtraResourcesFileName is the name of the file containing extra resources.
+	ExtraResourcesFileName = "extra-resources.yaml"
+	// ObservedResourcesFileName is the name of the file containing observed resources.
+	ObservedResourcesFileName = "observed-resources.yaml"
+	// RequiredResourcesFileName is the name of the file containing required resources.
+	RequiredResourcesFileName = "required-resources.yaml"
+	// tmpCleanupAnnotation temporarily stores potential function cleanup annotation during test runs.
+	tmpCleanupAnnotation = "internal." + render.AnnotationKeyRuntimeDockerCleanup
+)
+
+// Inputs contains all inputs to the test process.
+type Inputs struct {
+	TestDir              string
+	FileSystem           afero.Fs
+	OutputFile           string
+	PackageFile          string
+	FunctionsFile        string
+	FunctionAnnotations  []string // Annotations to apply to all functions (KEY=VALUE format)
+	WriteExpectedOutputs bool     // If true, write/update OutputFile for each test instead of comparing
+	IncludeFullXR        bool
+}
+
+// Outputs contains test results.
+type Outputs struct {
+	TestDirs []string // Directories containing tests
+	Pass     bool     // Test result
+}
+
+// Test renders composite resources and either compares them with expected outputs or writes new expected outputs.
+func Test(ctx context.Context, log logging.Logger, in Inputs) (Outputs, error) {
+	// Resolve functions from package file if provided
+	var resolvedFunctions []pkgv1.Function
+	if in.PackageFile != "" {
+		var err error
+		resolvedFunctions, err = resolveFunctionsFromPackage(in.FileSystem, in.PackageFile, log)
+		if err != nil {
+			return Outputs{}, errors.Wrap(err, "cannot resolve functions from package")
+		}
+	}
+
+	// Load functions from file if specified
+	var fileFunctions []pkgv1.Function
+	if in.FunctionsFile != "" {
+		functionFileExists, err := afero.Exists(in.FileSystem, in.FunctionsFile)
+		if err != nil {
+			return Outputs{}, errors.Wrapf(err, "cannot check if functions file exists")
+		}
+
+		// Check existence rather than just attempt loading, to provide the user with a clearer error message
+		if !functionFileExists {
+			return Outputs{}, errors.Errorf("functions file %q does not exist", in.FunctionsFile)
+		}
+
+		fileFunctions, err = render.LoadFunctions(in.FileSystem, in.FunctionsFile)
+		if err != nil {
+			return Outputs{}, errors.Wrap(err, "cannot load functions from functions file")
+		}
+		log.Debug("Loaded functions from file", "path", in.FunctionsFile, "count", len(fileFunctions))
+	}
+
+	// Merge functions: functions from a functions file take precedence over functions from a package file
+	functions := mergeFunctions(resolvedFunctions, fileFunctions, log)
+
+	// Apply function annotation overrides to all functions
+	if err := render.OverrideFunctionAnnotations(functions, in.FunctionAnnotations); err != nil {
+		return Outputs{}, errors.Wrap(err, "cannot apply function annotation overrides")
+	}
+
+	// Find all directories with a composite-resource.yaml file
+	testDirs, err := findTestDirectories(in.FileSystem, in.TestDir)
+	if err != nil {
+		return Outputs{}, err
+	}
+
+	log.Debug("Test directory paths", "directories", testDirs)
+
+	// Orphan all named container inbetween test runs to enable reuse between tests
+	namedFunctions := []pkgv1.Function{}
+	for i := range functions {
+		a := functions[i].GetAnnotations()
+		if _, ok := a[render.AnnotationKeyRuntimeNamedContainer]; ok {
+			if cleanup, ok := a[render.AnnotationKeyRuntimeDockerCleanup]; ok {
+				a[tmpCleanupAnnotation] = cleanup
+			}
+			a[render.AnnotationKeyRuntimeDockerCleanup] = string(render.AnnotationValueRuntimeDockerCleanupOrphan)
+			functions[i].SetAnnotations(a)
+			namedFunctions = append(namedFunctions, functions[i])
+		}
+	}
+
+	// Start all named containers
+	startRuntime, err := render.NewRuntimeFunctionRunner(ctx, log, namedFunctions)
+	log.Debug("named", "count", len(namedFunctions))
+	if err != nil {
+		return Outputs{}, errors.Wrap(err, "cannot start function runtimes")
+	}
+	if err := startRuntime.Stop(context.Background()); err != nil {
+		log.Info("Error stopping function runtimes", "error", err)
+	}
+
+	// Process tests sequentially
+	results := make(map[string]render.Outputs)
+	for _, dir := range testDirs {
+		output, err := renderTest(ctx, log, renderConfiguration{
+			filesystem:    in.FileSystem,
+			dir:           dir,
+			functions:     functions,
+			includeFullXR: in.IncludeFullXR,
+		})
+		if err != nil {
+			return Outputs{}, errors.Wrapf(err, "failed to process %q", dir)
+		}
+		results[dir] = output
+	}
+
+	// Revert cleanup annotations to original values
+	for i := range namedFunctions {
+		a := namedFunctions[i].GetAnnotations()
+		if cleanup, ok := a[tmpCleanupAnnotation]; ok {
+			a[render.AnnotationKeyRuntimeDockerCleanup] = cleanup
+			delete(a, tmpCleanupAnnotation)
+		} else {
+			delete(a, render.AnnotationKeyRuntimeDockerCleanup)
+		}
+		namedFunctions[i].SetAnnotations(a)
+	}
+
+	// Stop all named containers
+	stopRuntime, err := render.NewRuntimeFunctionRunner(ctx, log, namedFunctions)
+	if err != nil {
+		return Outputs{}, errors.Wrap(err, "cannot start function runtimes")
+	}
+	if err := stopRuntime.Stop(context.Background()); err != nil {
+		log.Info("Error stopping function runtimes", "error", err)
+	}
+
+	// Write expected outputs or compare (default is compare)
+	if in.WriteExpectedOutputs {
+		if err := writeExpectedOutputs(in, testDirs, results, log); err != nil {
+			return Outputs{}, err
+		}
+		return Outputs{
+			TestDirs: testDirs,
+			Pass:     true,
+		}, nil
+	}
+
+	// Compare expected vs. actual (default behavior)
+	testFailed, err := compareOutputs(in, testDirs, results, log)
+	if err != nil {
+		return Outputs{}, err
+	}
+
+	return Outputs{
+		TestDirs: testDirs,
+		Pass:     !testFailed,
+	}, nil
+}
+
+// resolveFunctionsFromPackage reads the package file and resolves function versions.
+func resolveFunctionsFromPackage(filesystem afero.Fs, packageFile string, log logging.Logger) ([]pkgv1.Function, error) {
+	packageData, err := afero.ReadFile(filesystem, packageFile)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot read package file %q", packageFile)
+	}
+
+	// Parse as Configuration using JSON-compatible YAML unmarshaling
+	var config pkgmetav1.Configuration
+	if err := k8syaml.Unmarshal(packageData, &config); err != nil {
+		return nil, errors.Wrap(err, "cannot unmarshal package file")
+	}
+
+	// Extract functions from dependsOn
+	functions := make([]pkgv1.Function, 0, len(config.Spec.DependsOn))
+	for _, dep := range config.Spec.DependsOn {
+		if dep.Kind != nil && *dep.Kind == "Function" && dep.Package != nil {
+			// Find the newest version within the constraints specified in the package file
+			packageWithVersion, err := resolvePackageVersion(*dep.Package, dep.Version)
+			if err != nil {
+				return nil, errors.Wrapf(err, "cannot resolve version for %s", *dep.Package)
+			}
+
+			// Parse package repository to get DNS-safe name
+			repo, err := name.NewRepository(*dep.Package)
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid package repository: %s", *dep.Package)
+			}
+			functionName := xpkg.ToDNSLabel(repo.RepositoryStr())
+
+			function := pkgv1.Function{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "pkg.crossplane.io/v1beta1",
+					Kind:       "Function",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: functionName,
+					Annotations: map[string]string{
+						render.AnnotationKeyRuntimeNamedContainer: functionName,
+					},
+				},
+				Spec: pkgv1.FunctionSpec{
+					PackageSpec: pkgv1.PackageSpec{
+						Package: packageWithVersion,
+					},
+				},
+			}
+			functions = append(functions, function)
+		}
+	}
+
+	log.Debug("Resolved functions from package", "functionCount", len(functions))
+	return functions, nil
+}
+
+// resolvePackageVersion lists available tags and finds the newest version within the constraints of the package file.
+// This logic is adapted from internal/controller/pkg/resolver/reconciler.go.
+func resolvePackageVersion(packageURL, versionConstraint string) (string, error) {
+	// Parse the repository reference
+	repo, err := name.NewRepository(packageURL)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid package URL: %s", packageURL)
+	}
+
+	// List all tags from the registry
+	tags, err := remote.List(repo)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot list tags for %s", packageURL)
+	}
+
+	// Parse version constraint (e.g., ">=v0.9.1, <v1.0.0" or ">=v0.9.1")
+	constraint, err := semver.NewConstraint(versionConstraint)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid version constraint: %s", versionConstraint)
+	}
+
+	// Convert tags to semver versions and filter by constraint
+	versions := []*semver.Version{}
+	for _, tag := range tags {
+		version, err := semver.NewVersion(tag)
+		if err != nil {
+			// Skip non-semver tags
+			continue
+		}
+
+		versions = append(versions, version)
+	}
+
+	if len(versions) == 0 {
+		return "", errors.Errorf("no valid semantic versions found for %s", packageURL)
+	}
+
+	// Sort versions in ascending order using semver.Collection
+	sort.Sort(semver.Collection(versions))
+
+	// Iterate in reverse order to find the highest version that satisfies the constraint
+	for i := len(versions) - 1; i >= 0; i-- {
+		if constraint.Check(versions[i]) {
+			return fmt.Sprintf("%s:v%s", packageURL, versions[i].String()), nil
+		}
+	}
+
+	return "", errors.Errorf("no version found matching constraint %q for %s", versionConstraint, packageURL)
+}
+
+// findTestDirectories finds all directories containing a composite-resource.yaml file.
+func findTestDirectories(filesystem afero.Fs, testDir string) ([]string, error) {
+	var testDirs []string
+
+	err := afero.Walk(filesystem, testDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() && info.Name() == CompositeFileName {
+			testDirs = append(testDirs, filepath.Dir(path))
+		}
+
+		return nil
+	})
+
+	return testDirs, err
+}
+
+type renderConfiguration struct {
+	filesystem    afero.Fs
+	dir           string
+	functions     []pkgv1.Function
+	includeFullXR bool
+}
+
+// renderTest renders a single test directory.
+func renderTest(ctx context.Context, log logging.Logger, rc renderConfiguration) (render.Outputs, error) {
+	log.Debug("Processing test directory", "directory", rc.dir)
+
+	compositeResource, err := loadCompositeResource(rc.filesystem, rc.dir)
+	if err != nil {
+		return render.Outputs{}, err
+	}
+
+	compositionName, err := extractCompositionName(compositeResource, rc.dir)
+	if err != nil {
+		return render.Outputs{}, err
+	}
+	log.Debug("Found composition reference", "name", compositionName)
+
+	composition, err := findComposition(rc.filesystem, ".", compositionName)
+	if err != nil {
+		return render.Outputs{}, errors.Wrapf(err, "cannot find composition for %q", compositionName)
+	}
+
+	renderInputs := render.Inputs{
+		CompositeResource: compositeResource,
+		Composition:       composition,
+		Functions:         rc.functions,
+		Context:           make(map[string][]byte),
+	}
+
+	if err := loadOptionalResources(rc.filesystem, rc.dir, &renderInputs, log); err != nil {
+		return render.Outputs{}, err
+	}
+
+	out, err := render.Render(ctx, log, renderInputs)
+	if err != nil {
+		return render.Outputs{}, errors.Wrap(err, "cannot render composite resource")
+	}
+
+	// from cb59913b81fee84f966b5c43f87fa809efdd962e/cmd/crank/render/cmd.go:304
+	if rc.includeFullXR {
+		xrSpec, err := fieldpath.Pave(compositeResource.Object).GetValue("spec")
+		if err != nil {
+			return render.Outputs{}, errors.Wrapf(err, "cannot get composite resource spec")
+		}
+
+		if err := fieldpath.Pave(out.CompositeResource.Object).SetValue("spec", xrSpec); err != nil {
+			return render.Outputs{}, errors.Wrapf(err, "cannot set composite resource spec")
+		}
+
+		xrMeta, err := fieldpath.Pave(compositeResource.Object).GetValue("metadata")
+		if err != nil {
+			return render.Outputs{}, errors.Wrapf(err, "cannot get composite resource metadata")
+		}
+
+		if err := fieldpath.Pave(out.CompositeResource.Object).SetValue("metadata", xrMeta); err != nil {
+			return render.Outputs{}, errors.Wrapf(err, "cannot set composite resource metadata")
+		}
+	}
+
+	return out, nil
+}
+
+// writeExpectedOutputs writes the rendered outputs to files.
+func writeExpectedOutputs(in Inputs, testDirs []string, results map[string]render.Outputs, log logging.Logger) error {
+	header := []byte("# Generated by: crossplane alpha render test --write-expected-outputs\n# Do not edit this file manually\n")
+
+	for _, dir := range testDirs {
+		yamlResult, err := marshalOutputs(results[dir])
+		if err != nil {
+			return errors.Wrapf(err, "cannot marshal outputs for %q", dir)
+		}
+
+		// Combine header and output
+		outputWithHeader := make([]byte, 0, len(header)+len(yamlResult))
+		outputWithHeader = append(outputWithHeader, header...)
+		outputWithHeader = append(outputWithHeader, yamlResult...)
+
+		outputPath := filepath.Join(dir, in.OutputFile)
+		if err := afero.WriteFile(in.FileSystem, outputPath, outputWithHeader, 0o644); err != nil {
+			return errors.Wrapf(err, "cannot write output to %q", outputPath)
+		}
+
+		log.Debug("Wrote expected test output to file", "path", outputPath)
+	}
+	return nil
+}
+
+// compareOutputs compares expected and actual outputs, returns true if any test failed.
+func compareOutputs(in Inputs, testDirs []string, results map[string]render.Outputs, log logging.Logger) (bool, error) {
+	testFailed := false
+
+	for _, dir := range testDirs {
+		yamlResult, err := marshalOutputs(results[dir])
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot marshal outputs for %q", dir)
+		}
+
+		expectedOutput, err := afero.ReadFile(in.FileSystem, filepath.Join(dir, in.OutputFile))
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot read expected output for test %q", dir)
+		}
+
+		expectedDocs, err := ytbx.LoadDocuments(expectedOutput)
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot parse expected YAML for %q", dir)
+		}
+
+		actualDocs, err := ytbx.LoadDocuments(yamlResult)
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot parse actual YAML for %q", dir)
+		}
+
+		report, err := dyff.CompareInputFiles(
+			ytbx.InputFile{Documents: expectedDocs},
+			ytbx.InputFile{Documents: actualDocs},
+		)
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot compare files for %q", dir)
+		}
+
+		if len(report.Diffs) > 0 {
+			testFailed = true
+			log.Debug("Test failed", "directory", dir)
+			_, _ = fmt.Fprintln(os.Stdout, "TEST FAILED", dir)
+
+			reportWriter := &dyff.HumanReport{
+				Report:     report,
+				Indent:     2,
+				OmitHeader: true,
+			}
+
+			var buf bytes.Buffer
+			if err := reportWriter.WriteReport(&buf); err != nil {
+				return false, errors.Wrapf(err, "cannot write diff report for %q", dir)
+			}
+
+			// extra diff indent
+			_, _ = fmt.Fprintln(os.Stdout, "  "+strings.ReplaceAll(buf.String(), "\n", "\n  "))
+		} else {
+			log.Debug("Test passed", "directory", dir)
+			_, _ = fmt.Fprintln(os.Stdout, "TEST PASSED", dir)
+		}
+	}
+
+	return testFailed, nil
+}
+
+// loadCompositeResource loads the composite resource from the test directory.
+func loadCompositeResource(filesystem afero.Fs, dir string) (*composite.Unstructured, error) {
+	compositeResourceFilePath := filepath.Join(dir, CompositeFileName)
+	compositeResource, err := render.LoadCompositeResource(filesystem, compositeResourceFilePath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot load CompositeResource from %q", compositeResourceFilePath)
+	}
+	return compositeResource, nil
+}
+
+// extractCompositionName extracts the composition name from the composite resource.
+func extractCompositionName(compositeResource *composite.Unstructured, dir string) (string, error) {
+	compositionName, found, err := unstructured.NestedString(compositeResource.Object, "spec", "crossplane", "compositionRef", "name")
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot extract composition name from composite resource in %q", dir)
+	}
+	if !found {
+		return "", errors.Errorf("spec.crossplane.compositionRef.name not found in composite resource in %q", dir)
+	}
+	return compositionName, nil
+}
+
+// findComposition searches for a Composition by name, among the files in the search dir.
+func findComposition(filesystem afero.Fs, searchDir, compositionName string) (*v1.Composition, error) {
+	var foundComposition *v1.Composition
+
+	err := afero.Walk(filesystem, searchDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		// Only check .yaml or .yml files
+		ext := filepath.Ext(path)
+		if ext != ".yaml" && ext != ".yml" {
+			return nil
+		}
+
+		// Try to load as a Composition
+		composition, err := render.LoadComposition(filesystem, path)
+		if err != nil {
+			// Not a valid composition file, skip it
+			//nolint:nilerr // Intentionally ignoring load errors to skip non-composition YAML files
+			return nil
+		}
+
+		if composition.Name == compositionName {
+			foundComposition = composition
+			return filepath.SkipAll // Found it, stop walking
+		}
+
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
+		return nil, err
+	}
+
+	if foundComposition == nil {
+		return nil, errors.Errorf("composition %q not found", compositionName)
+	}
+
+	return foundComposition, nil
+}
+
+// mergeFunctions merges package functions with file functions, with file functions taking precedence.
+func mergeFunctions(packageFunctions, fileFunctions []pkgv1.Function, log logging.Logger) []pkgv1.Function {
+	// Create a map to hold all functions
+	functions := make(map[string]pkgv1.Function, len(packageFunctions)+len(fileFunctions))
+
+	for _, function := range packageFunctions {
+		functions[function.Name] = function
+	}
+
+	// Overrides function derived from package file if same name is used in function file
+	for _, function := range fileFunctions {
+		if _, exists := functions[function.Name]; exists {
+			log.Debug("Function from package overridden by functions file", "name", function.Name)
+		}
+		functions[function.Name] = function
+	}
+
+	log.Debug("Merged functions", "totalCount", len(functions), "fromFile", len(fileFunctions), "fromPackage", len(packageFunctions))
+	return slices.Collect(maps.Values(functions))
+}
+
+// loadOptionalResources loads optional extra resources, observed resources, and contexts.
+func loadOptionalResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	if err := loadExtraResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
+	if err := loadObservedResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
+	if err := loadRequiredResources(filesystem, dir, renderInputs, log); err != nil {
+		return err
+	}
+
+	return loadContexts(filesystem, dir, renderInputs, log)
+}
+
+// loadExtraResources loads optional extra resources from extra-resources.yaml.
+func loadExtraResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	extraResourcesPath := filepath.Join(dir, ExtraResourcesFileName)
+	exists, err := afero.Exists(filesystem, extraResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if extra resources file exists at %q", extraResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	extraResources, err := render.LoadRequiredResources(filesystem, extraResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load extra resources from %q", extraResourcesPath)
+	}
+	renderInputs.ExtraResources = extraResources
+	log.Debug("Loaded extra resources", "path", extraResourcesPath)
+	return nil
+}
+
+// loadObservedResources loads optional observed resources from observed-resources.yaml.
+func loadObservedResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	observedResourcesPath := filepath.Join(dir, ObservedResourcesFileName)
+	exists, err := afero.Exists(filesystem, observedResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if observed resources file exists at %q", observedResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	observedResources, err := render.LoadObservedResources(filesystem, observedResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load observed resources from %q", observedResourcesPath)
+	}
+	renderInputs.ObservedResources = observedResources
+	log.Debug("Loaded observed resources", "path", observedResourcesPath)
+	return nil
+}
+
+// loadRequiredResources loads optional required resources from required-resources.yaml.
+func loadRequiredResources(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	requiredResourcesPath := filepath.Join(dir, RequiredResourcesFileName)
+	exists, err := afero.Exists(filesystem, requiredResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if required resources file exists at %q", requiredResourcesPath)
+	}
+	if !exists {
+		return nil
+	}
+
+	requiredResources, err := render.LoadRequiredResources(filesystem, requiredResourcesPath)
+	if err != nil {
+		return errors.Wrapf(err, "cannot load required resources from %q", requiredResourcesPath)
+	}
+	renderInputs.RequiredResources = requiredResources
+	log.Debug("Loaded required resources", "path", requiredResourcesPath)
+	return nil
+}
+
+// loadContexts loads optional context files from the contexts directory.
+func loadContexts(filesystem afero.Fs, dir string, renderInputs *render.Inputs, log logging.Logger) error {
+	contextsDir := filepath.Join(dir, "contexts")
+	exists, err := afero.DirExists(filesystem, contextsDir)
+	if err != nil {
+		return errors.Wrapf(err, "cannot check if contexts directory exists at %q", contextsDir)
+	}
+	if !exists {
+		return nil
+	}
+
+	contextFiles, err := afero.ReadDir(filesystem, contextsDir)
+	if err != nil {
+		return errors.Wrapf(err, "cannot read contexts directory %q", contextsDir)
+	}
+
+	for _, fileInfo := range contextFiles {
+		if fileInfo.IsDir() || filepath.Ext(fileInfo.Name()) != ".json" {
+			continue
+		}
+
+		contextFilePath := filepath.Join(contextsDir, fileInfo.Name())
+		contextData, err := afero.ReadFile(filesystem, contextFilePath)
+		if err != nil {
+			return errors.Wrapf(err, "cannot read context file %q", contextFilePath)
+		}
+
+		contextName := strings.TrimSuffix(fileInfo.Name(), ".json")
+		renderInputs.Context[contextName] = contextData
+		log.Debug("Loaded context", "name", contextName, "path", contextFilePath)
+	}
+
+	return nil
+}
+
+// marshalOutputs marshals composite and composed resources to YAML documents.
+func marshalOutputs(outputs render.Outputs) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+
+	buf.WriteString("---\n")
+	if err := enc.Encode(outputs.CompositeResource.Object); err != nil {
+		return nil, errors.Wrap(err, "cannot marshal composite resource to YAML")
+	}
+
+	for _, composed := range outputs.ComposedResources {
+		if err := enc.Encode(composed.Object); err != nil {
+			return nil, errors.Wrap(err, "cannot marshal composed resource to YAML")
+		}
+	}
+
+	return buf.Bytes(), nil
+}

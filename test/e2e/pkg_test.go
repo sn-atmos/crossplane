@@ -503,6 +503,120 @@ func TestUpgradeDependencyVersion(t *testing.T) {
 	)
 }
 
+// TestUpgradeDependencyVersionSharedTransitive tests that dependencies are
+// upgraded correctly when multiple packages share a transitive dependency,
+// which temporarily has conflicting constraints while the parent packages are
+// upgraded in sequence.
+func TestUpgradeDependencyVersionSharedTransitive(t *testing.T) {
+	manifests := "test/e2e/manifests/pkg/dependency-upgrade/transitive"
+
+	resolutionFailed := v1beta1.ResolutionFailed(nil)
+	resolutionFailed.Message = ""
+
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that a shared transitive dependency can be upgraded.").
+			WithLabel(LabelArea, LabelAreaPkg).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
+			WithSetup("ApplyConfiguration", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "configuration-initial.yaml"),
+				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration-initial.yaml"),
+			)).
+			Assess("DepsAreHealthy",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "deps.yaml", pkgv1.Healthy(), pkgv1.Active())).
+			Assess("ConfigurationIsHealthy",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-initial.yaml", pkgv1.Healthy(), pkgv1.Active())).
+			Assess("UpdateConfigurationA",
+				funcs.ApplyResources(FieldManager, manifests, "configuration-a-updated.yaml")).
+			Assess("DependencyResolutionConflict",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", resolutionFailed)).
+			Assess("UpdateConfigurationB",
+				funcs.ApplyResources(FieldManager, manifests, "configuration-b-updated.yaml")).
+			Assess("DepsUpgradedToNewVersionAndHealthy", funcs.AllOf(
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-dep1"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-dep1:v0.0.2"),
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-dep2"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-dep2:v0.0.2"),
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-transitive"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-transitive:v0.0.2"),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "deps.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("ConfigurationsAreStillHealthy", funcs.AllOf(
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-a-updated.yaml", pkgv1.Healthy(), pkgv1.Active()),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-b-updated.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("LockConditionDependencyResolutionSucceeded",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())).
+			// Dependencies are not automatically deleted.
+			WithTeardown("DeleteConfiguration", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-a-updated.yaml", metav1.DeletePropagationForeground),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-b-updated.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-a-updated.yaml"),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-b-updated.yaml"),
+			)).
+			WithTeardown("DeleteDeps", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "deps.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "deps.yaml"),
+			)).
+			Feature(),
+	)
+}
+
+// TestUpgradeDependencyVersionSharedTransitiveNoop tests that dependencies are
+// upgraded correctly when multiple packages share a transitive dependency,
+// which temporarily has conflicting constraints while the parent packages are
+// upgraded in sequence, and the new version of the transitive dependency is
+// identical to the old version (i.e., they have the same digest but different
+// semvers).
+func TestUpgradeDependencyVersionSharedTransitiveNoop(t *testing.T) {
+	manifests := "test/e2e/manifests/pkg/dependency-upgrade/transitive-noop"
+
+	resolutionFailed := v1beta1.ResolutionFailed(nil)
+	resolutionFailed.Message = ""
+
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that a shared transitive dependency can be upgraded to a new semantic version when its digest does not change.").
+			WithLabel(LabelArea, LabelAreaPkg).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
+			WithSetup("ApplyConfiguration", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "configuration-initial.yaml"),
+				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration-initial.yaml"),
+			)).
+			Assess("DepsAreHealthy",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "deps.yaml", pkgv1.Healthy(), pkgv1.Active())).
+			Assess("ConfigurationIsHealthy",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-initial.yaml", pkgv1.Healthy(), pkgv1.Active())).
+			Assess("UpdateConfigurationA",
+				funcs.ApplyResources(FieldManager, manifests, "configuration-a-updated.yaml")).
+			Assess("DependencyResolutionConflict",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", resolutionFailed)).
+			Assess("UpdateConfigurationB",
+				funcs.ApplyResources(FieldManager, manifests, "configuration-b-updated.yaml")).
+			Assess("DepsUpgradedToNewVersionAndHealthy", funcs.AllOf(
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-dep1"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-dep1:v0.0.3"),
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-dep2"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-dep2:v0.0.3"),
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-e2e-transitive-transitive"}}, "spec.package", "xpkg.crossplane.io/crossplane/e2e-transitive-transitive:v0.0.3"),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "deps.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("ConfigurationsAreStillHealthy", funcs.AllOf(
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-a-updated.yaml", pkgv1.Healthy(), pkgv1.Active()),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-b-updated.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("LockConditionDependencyResolutionSucceeded",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())).
+			// Dependencies are not automatically deleted.
+			WithTeardown("DeleteConfiguration", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-a-updated.yaml", metav1.DeletePropagationForeground),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-b-updated.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-a-updated.yaml"),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-b-updated.yaml"),
+			)).
+			WithTeardown("DeleteDeps", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "deps.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "deps.yaml"),
+			)).
+			Feature(),
+	)
+}
+
 // TestUpgradeDependencyDigest tests that a dependency digest is upgraded when the parent configuration is updated.
 // The packages used in this test are built and pushed manually and the manifests must remain unchanged to ensure
 // the test scenario is not broken. Corresponding meta file can be found under
@@ -750,12 +864,13 @@ func TestImageConfigVerificationWithKey(t *testing.T) {
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration-unsigned.yaml"),
 			)).
 			Assess("SignatureVerificationFailed", funcs.AllOf(
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key-e0adba255c20"}}, pkgv1.AwaitingVerification(), pkgv1.VerificationFailed("", nil).WithMessage("")),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key"}}, pkgv1.Active(), pkgv1.Unhealthy()),
+				// Verification fails before the revision is created, so only the
+				// Configuration exists and it's stuck unpacking.
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key"}}, pkgv1.Unpacking(), pkgv1.Unhealthy()),
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key-1765fb139d01"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key-1765fb139d01"}}, pkgv1.RevisionHealthy()),
 				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
@@ -786,12 +901,13 @@ func TestImageConfigVerificationKeyless(t *testing.T) {
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "provider-unsigned.yaml"),
 			)).
 			Assess("SignatureVerificationFailed", funcs.AllOf(
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless-552a394a8acc"}}, pkgv1.AwaitingVerification(), pkgv1.VerificationFailed("", nil).WithMessage("")),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Unhealthy()),
+				// Verification fails before the revision is created, so only the
+				// Provider exists and it's stuck unpacking.
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless"}}, pkgv1.Unpacking(), pkgv1.Unhealthy()),
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "provider-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.RevisionHealthy()),
 				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
@@ -806,15 +922,15 @@ func TestImageConfigVerificationKeyless(t *testing.T) {
 	)
 }
 
-// TestImageConfigAttestationVerificationPrivateKeyless tests that we can verify signature and attestations on a private
-// provider when signed keyless.
+// TestImageConfigAttestationVerificationPrivateKeylessCosignV2 tests that we can verify signature and attestations on a private
+// provider when signed keyless using cosign v2.
 // The providers used in this test are built and pushed manually with the necessary signatures and attestations, they
 // are just a copy of the provider-nop package.
-func TestImageConfigAttestationVerificationPrivateKeyless(t *testing.T) {
+func TestImageConfigAttestationVerificationPrivateKeylessCosignV2(t *testing.T) {
 	manifests := "test/e2e/manifests/pkg/image-config/signature-verification/keyless-private-with-attestation"
 
 	environment.Test(t,
-		features.NewWithDescription(t.Name(), "Tests that we can verify signature and attestations on a private provider when signed keyless.").
+		features.NewWithDescription(t.Name(), "Tests that we can verify signature and attestations on a private provider when signed keyless with cosign v2.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
 			WithLabel(config.LabelTestSuite, SuitePackageSignatureVerification).
@@ -823,22 +939,56 @@ func TestImageConfigAttestationVerificationPrivateKeyless(t *testing.T) {
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "image-config.yaml"),
 			)).
 			WithSetup("ApplyUnsignedPackage", funcs.AllOf(
-				funcs.ApplyResources(FieldManager, manifests, "provider-unsigned.yaml"),
-				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "provider-unsigned.yaml"),
+				funcs.ApplyResources(FieldManager, manifests, "provider-unsigned-cosign-v2.yaml"),
+				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "provider-unsigned-cosign-v2.yaml"),
 			)).
 			Assess("SignatureVerificationFailed", funcs.AllOf(
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-552a394a8acc"}}, pkgv1.AwaitingVerification(), pkgv1.VerificationFailed("", nil).WithMessage("")),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Unhealthy()),
+				// Verification fails before the revision is created, so only the
+				// Provider exists and it's stuck unpacking.
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-v2"}}, pkgv1.Unpacking(), pkgv1.Unhealthy()),
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
-				funcs.ApplyResources(FieldManager, manifests, "provider-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Healthy()),
+				funcs.ApplyResources(FieldManager, manifests, "provider-signed-cosign-v2.yaml"),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-v2-37f3300ebfa7"}}, pkgv1.RevisionHealthy()),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-v2"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
 				funcs.DeleteResources(manifests, "image-config.yaml"),
-				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-signed.yaml", metav1.DeletePropagationForeground),
-				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-signed.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-signed-cosign-v2.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-signed-cosign-v2.yaml"),
+				// Providers are a copy of provider-nop, so waiting until nop
+				// CRD is gone is sufficient to ensure the provider completely
+				// deleted including all revisions.
+				funcs.ResourceDeletedWithin(2*time.Minute, &k8sapiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "nopresources.nop.crossplane.io"}}),
+			)).Feature(),
+	)
+}
+
+// TestImageConfigAttestationVerificationPrivateKeylessCosignV3 tests that we can verify signature and attestations on a private
+// provider when signed keyless using cosign v3.
+// The providers used in this test are built and pushed manually with the necessary signatures and attestations, they
+// are just a copy of the provider-nop package.
+func TestImageConfigAttestationVerificationPrivateKeylessCosignV3(t *testing.T) {
+	manifests := "test/e2e/manifests/pkg/image-config/signature-verification/keyless-private-with-attestation"
+
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that we can verify signature and attestations on a private provider when signed keyless with cosign v3.").
+			WithLabel(LabelArea, LabelAreaPkg).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, SuitePackageSignatureVerification).
+			WithSetup("ApplyImageConfig", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "image-config.yaml"),
+				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "image-config.yaml"),
+			)).
+			Assess("SignatureVerificationSucceeded", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "provider-signed-cosign-v3.yaml"),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-v3-37f3300ebfa7"}}, pkgv1.RevisionHealthy()),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-v3"}}, pkgv1.Active(), pkgv1.Healthy()),
+			)).
+			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
+				funcs.DeleteResources(manifests, "image-config.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-signed-cosign-v3.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-signed-cosign-v3.yaml"),
 				// Providers are a copy of provider-nop, so waiting until nop
 				// CRD is gone is sufficient to ensure the provider completely
 				// deleted including all revisions.

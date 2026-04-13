@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-containerregistry/pkg/name"
 	conregv1 "github.com/google/go-containerregistry/pkg/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -134,7 +134,7 @@ func (m *PackageDependencyManager) Resolve(ctx context.Context, meta pkgmetav1.P
 
 	d := m.newDag()
 
-	implied, err := d.Init(v1beta1.ToNodes(lock.Packages...))
+	implied, err := d.Init(dag.PackagesToNodes(lock.Packages...))
 	if err != nil {
 		return found, installed, invalid, errors.Wrap(err, errInitDAG)
 	}
@@ -176,10 +176,22 @@ func (m *PackageDependencyManager) Resolve(ctx context.Context, meta pkgmetav1.P
 	}
 
 	prExists := false
-
-	for _, lp := range lock.Packages {
+	for i, lp := range lock.Packages {
 		if lp.Name == pr.GetName() {
 			prExists = true
+
+			if lp.Version != self.Version {
+				// Version was updated without creating a new revision (e.g., because
+				// there were no changes between two semvers). Update the lock to
+				// reflect which version is installed, in case other packages are
+				// depending on the new version.
+				lock.Packages[i].Version = self.Version
+				if err := m.client.Update(ctx, lock); err != nil {
+					return found, installed, invalid, err
+				}
+				d.AddOrUpdateNodes(&dag.PackageNode{LockPackage: self})
+			}
+
 			break
 		}
 	}
@@ -192,7 +204,7 @@ func (m *PackageDependencyManager) Resolve(ctx context.Context, meta pkgmetav1.P
 		}
 		// Package may exist in the graph as a dependency, or may not exist at
 		// all. We need to either convert it to a full node or add it.
-		d.AddOrUpdateNodes(&self)
+		d.AddOrUpdateNodes(&dag.PackageNode{LockPackage: self})
 
 		// If any direct dependencies are missing we skip checking for
 		// transitive ones.
@@ -204,7 +216,7 @@ func (m *PackageDependencyManager) Resolve(ctx context.Context, meta pkgmetav1.P
 				continue
 			}
 
-			missing = append(missing, &dep)
+			missing = append(missing, &dag.DependencyNode{Dependency: dep})
 		}
 
 		if installed != found {
@@ -244,7 +256,7 @@ func (m *PackageDependencyManager) Resolve(ctx context.Context, meta pkgmetav1.P
 			return found, installed, invalid, errors.New(errDependencyNotInGraph)
 		}
 
-		lp, ok := n.(*v1beta1.LockPackage)
+		lp, ok := n.(*dag.PackageNode)
 		if !ok {
 			return found, installed, invalid, errors.New(errDependencyNotLockPackage)
 		}

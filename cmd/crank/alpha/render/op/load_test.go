@@ -23,6 +23,8 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/spf13/afero"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/utils/ptr"
 
 	opsv1alpha1 "github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
 )
@@ -39,16 +41,44 @@ func TestLoadOperation(t *testing.T) {
 
 	invalidYAML := "invalid: yaml: content: ["
 
+	notAnOperationYAML := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-data
+data:
+  foo: bar`
+
 	cronOperationYAML := `apiVersion: ops.crossplane.io/v1alpha1
 kind: CronOperation
 metadata:
-  name: test-cron
+  name: test-operation
 spec:
   schedule: "*/5 * * * *"
-  pipeline:
-  - step: test-step
-    functionRef:
-      name: test-function`
+  operationTemplate:
+    spec:
+      mode: Pipeline
+      pipeline:
+      - step: test-step
+        functionRef:
+          name: test-function`
+
+	watchOperationYAML := `apiVersion: ops.crossplane.io/v1alpha1
+kind: WatchOperation
+metadata:
+  name: test-operation
+spec:
+  watch:
+    apiVersion: v1
+    kind: Secret
+    matchLabels:
+      foo: bar
+  operationTemplate:
+    spec:
+      mode: Pipeline
+      pipeline:
+      - step: test-step
+        functionRef:
+          name: test-function`
 
 	wrongVersionYAML := `apiVersion: ops.crossplane.io/v1beta1
 kind: Operation
@@ -127,10 +157,10 @@ spec:
 			args: args{
 				fs: func() afero.Fs {
 					fs := afero.NewMemMapFs()
-					_ = afero.WriteFile(fs, "cronop.yaml", []byte(cronOperationYAML), 0o644)
+					_ = afero.WriteFile(fs, "notop.yaml", []byte(notAnOperationYAML), 0o644)
 					return fs
 				}(),
-				path: "cronop.yaml",
+				path: "notop.yaml",
 			},
 			want: want{
 				err: cmpopts.AnyError,
@@ -164,6 +194,34 @@ spec:
 				op: validOperation,
 			},
 		},
+		"ValidCronOperation": {
+			reason: "Should successfully load a valid Operation from a CronOperation",
+			args: args{
+				fs: func() afero.Fs {
+					fs := afero.NewMemMapFs()
+					_ = afero.WriteFile(fs, "cronoperation.yaml", []byte(cronOperationYAML), 0o644)
+					return fs
+				}(),
+				path: "cronoperation.yaml",
+			},
+			want: want{
+				op: validOperation,
+			},
+		},
+		"ValidWatchOperation": {
+			reason: "Should successfully load a valid Operation from a WatchOperation without injecting watched resource",
+			args: args{
+				fs: func() afero.Fs {
+					fs := afero.NewMemMapFs()
+					_ = afero.WriteFile(fs, "watchoperation.yaml", []byte(watchOperationYAML), 0o644)
+					return fs
+				}(),
+				path: "watchoperation.yaml",
+			},
+			want: want{
+				op: validOperation,
+			},
+		},
 	}
 
 	for name, tc := range cases {
@@ -174,6 +232,157 @@ spec:
 			}
 			if diff := cmp.Diff(tc.want.op, got); diff != "" {
 				t.Errorf("\n%s\nLoadOperation(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestInjectWatchedResource(t *testing.T) {
+	type args struct {
+		op      *opsv1alpha1.Operation
+		watched *unstructured.Unstructured
+	}
+
+	sn := "cool-secret"
+	sns := "default"
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   *opsv1alpha1.Operation
+	}{
+		"InjectIntoAllSteps": {
+			reason: "Should inject the watched resource selector into all pipeline steps",
+			args: args{
+				op: &opsv1alpha1.Operation{
+					Spec: opsv1alpha1.OperationSpec{
+						Mode: opsv1alpha1.OperationModePipeline,
+						Pipeline: []opsv1alpha1.PipelineStep{
+							{
+								Step: "step-one",
+								FunctionRef: opsv1alpha1.FunctionReference{
+									Name: "fn-one",
+								},
+							},
+							{
+								Step: "step-two",
+								FunctionRef: opsv1alpha1.FunctionReference{
+									Name: "fn-two",
+								},
+							},
+						},
+					},
+				},
+				watched: &unstructured.Unstructured{
+					Object: map[string]any{
+						"apiVersion": "v1",
+						"kind":       "Secret",
+						"metadata": map[string]any{
+							"name":      "cool-secret",
+							"namespace": "default",
+						},
+					},
+				},
+			},
+			want: &opsv1alpha1.Operation{
+				Spec: opsv1alpha1.OperationSpec{
+					Mode: opsv1alpha1.OperationModePipeline,
+					Pipeline: []opsv1alpha1.PipelineStep{
+						{
+							Step: "step-one",
+							FunctionRef: opsv1alpha1.FunctionReference{
+								Name: "fn-one",
+							},
+							Requirements: &opsv1alpha1.FunctionRequirements{
+								RequiredResources: []opsv1alpha1.RequiredResourceSelector{
+									{
+										RequirementName: opsv1alpha1.RequirementNameWatchedResource,
+										APIVersion:      "v1",
+										Kind:            "Secret",
+										Name:            &sn,
+										Namespace:       &sns,
+									},
+								},
+							},
+						},
+						{
+							Step: "step-two",
+							FunctionRef: opsv1alpha1.FunctionReference{
+								Name: "fn-two",
+							},
+							Requirements: &opsv1alpha1.FunctionRequirements{
+								RequiredResources: []opsv1alpha1.RequiredResourceSelector{
+									{
+										RequirementName: opsv1alpha1.RequirementNameWatchedResource,
+										APIVersion:      "v1",
+										Kind:            "Secret",
+										Name:            &sn,
+										Namespace:       &sns,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"ClusterScopedResource": {
+			reason: "Should not set namespace for cluster-scoped resources",
+			args: args{
+				op: &opsv1alpha1.Operation{
+					Spec: opsv1alpha1.OperationSpec{
+						Mode: opsv1alpha1.OperationModePipeline,
+						Pipeline: []opsv1alpha1.PipelineStep{
+							{
+								Step: "test-step",
+								FunctionRef: opsv1alpha1.FunctionReference{
+									Name: "test-fn",
+								},
+							},
+						},
+					},
+				},
+				watched: &unstructured.Unstructured{
+					Object: map[string]any{
+						"apiVersion": "v1",
+						"kind":       "Node",
+						"metadata": map[string]any{
+							"name": "my-node",
+						},
+					},
+				},
+			},
+			want: &opsv1alpha1.Operation{
+				Spec: opsv1alpha1.OperationSpec{
+					Mode: opsv1alpha1.OperationModePipeline,
+					Pipeline: []opsv1alpha1.PipelineStep{
+						{
+							Step: "test-step",
+							FunctionRef: opsv1alpha1.FunctionReference{
+								Name: "test-fn",
+							},
+							Requirements: &opsv1alpha1.FunctionRequirements{
+								RequiredResources: []opsv1alpha1.RequiredResourceSelector{
+									{
+										RequirementName: opsv1alpha1.RequirementNameWatchedResource,
+										APIVersion:      "v1",
+										Kind:            "Node",
+										Name:            ptr.To("my-node"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			InjectWatchedResource(tc.args.op, tc.args.watched)
+			if diff := cmp.Diff(tc.want, tc.args.op); diff != "" {
+				t.Errorf("\n%s\nInjectWatchedResource(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

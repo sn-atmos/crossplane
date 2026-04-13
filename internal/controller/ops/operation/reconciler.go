@@ -23,6 +23,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +43,7 @@ import (
 
 	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
 	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/step"
 	"github.com/crossplane/crossplane/v2/internal/xfn"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
@@ -77,10 +79,12 @@ type Reconciler struct {
 	pipeline  xfn.FunctionRunner
 	functions xfn.CapabilityChecker
 	resources xfn.RequiredResourcesFetcher
+	schemas   xfn.RequiredSchemasFetcher
 }
 
 // Reconcile an Operation by running its function pipeline.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) { //nolint:gocognit // Reconcilers are typically complex.
+	ctx = step.ForOperations(ctx)
 	log := r.log.WithValues("request", req)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -170,10 +174,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// The function context starts empty.
 	fctx := &structpb.Struct{Fields: map[string]*structpb.Value{}}
 
+	// Generate a trace ID for this pipeline execution. All steps in this
+	// reconciliation will share this trace ID for correlation.
+	traceID := uuid.NewString()
+
 	// Run any operation functions in the pipeline. Each function may mutate
 	// the desired state returned by the last, and each function may produce
 	// results that will be emitted as events.
-	for _, fn := range op.Spec.Pipeline {
+	for stepIndex, fn := range op.Spec.Pipeline {
 		log = log.WithValues("step", fn.Step)
 
 		req := &fnv1.RunFunctionRequest{Desired: d, Context: fctx}
@@ -245,11 +253,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				// Add to request (resources could be nil if not found)
 				req.RequiredResources[sel.RequirementName] = resources
 			}
+
+			req.RequiredSchemas = map[string]*fnv1.Schema{}
+			for _, sel := range fn.Requirements.RequiredSchemas {
+				schema, err := r.schemas.Fetch(ctx, xfn.ToProtobufSchemaSelector(&sel))
+				if err != nil {
+					op.Status.Failures++
+
+					log.Debug("Cannot fetch bootstrap required schema", "error", err, "failures", op.Status.Failures, "requirement", sel.RequirementName)
+					err = errors.Wrapf(err, "cannot fetch bootstrap required schema for requirement %q", sel.RequirementName)
+					r.record.Event(op, event.Warning(reasonBootstrapRequirements, err))
+					status.MarkConditions(xpv1.ReconcileError(err))
+					_ = r.client.Status().Update(ctx, op)
+
+					return reconcile.Result{}, err
+				}
+
+				req.RequiredSchemas[sel.RequirementName] = schema
+			}
 		}
 
-		req.Meta = &fnv1.RequestMeta{Tag: xfn.Tag(req)}
+		req.Meta = &fnv1.RequestMeta{Tag: xfn.Tag(req), Capabilities: xfn.SupportedCapabilities()}
 
-		rsp, err := r.pipeline.RunFunction(ctx, fn.FunctionRef.Name, req)
+		// Add step metadata to context for use by downstream components like InspectedRunner.
+		stepCtx := step.ContextWithStepMetaForOperations(ctx, traceID, fn.Step, int32(stepIndex), op.GetName(), string(op.GetUID())) //nolint:gosec // int32 conversion is safe here, we know the number of steps won't exceed int32.
+
+		rsp, err := r.pipeline.RunFunction(stepCtx, fn.FunctionRef.Name, req)
 		if err != nil {
 			op.Status.Failures++
 

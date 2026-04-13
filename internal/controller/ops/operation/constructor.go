@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package operation implements day two operations.
 package operation
 
 import (
@@ -43,7 +42,8 @@ func Setup(mgr ctrl.Manager, o opscontroller.Options) error {
 	r := NewReconciler(mgr,
 		WithLogger(o.Logger.WithValues("controller", name)),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)),
-		WithFunctionRunner(o.FunctionRunner))
+		WithFunctionRunner(o.FunctionRunner),
+		WithRequiredSchemasFetcher(xfn.NewOpenAPIRequiredSchemasFetcher(o.OpenAPIClient)))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
@@ -90,6 +90,13 @@ func WithRequiredResourcesFetcher(f xfn.RequiredResourcesFetcher) ReconcilerOpti
 	}
 }
 
+// WithRequiredSchemasFetcher specifies how the Reconciler should fetch required schemas.
+func WithRequiredSchemasFetcher(f xfn.RequiredSchemasFetcher) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.schemas = f
+	}
+}
+
 // NewReconciler returns a Reconciler of Usages.
 func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 	r := &Reconciler{
@@ -99,6 +106,7 @@ func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 		conditions: conditions.ObservedGenerationPropagationManager{},
 		functions:  xfn.NewRevisionCapabilityChecker(mgr.GetClient()),
 		resources:  xfn.NewExistingRequiredResourcesFetcher(mgr.GetClient()),
+		schemas:    xfn.NopRequiredSchemasFetcher{},
 	}
 
 	for _, f := range opts {

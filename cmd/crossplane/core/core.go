@@ -31,6 +31,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kmeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -48,6 +51,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/parser"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured"
 
 	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
@@ -67,8 +71,10 @@ import (
 	"github.com/crossplane/crossplane/v2/internal/transport"
 	usagehook "github.com/crossplane/crossplane/v2/internal/webhook/protection/usage"
 	"github.com/crossplane/crossplane/v2/internal/xfn"
-	"github.com/crossplane/crossplane/v2/internal/xfn/cached"
+	xfncached "github.com/crossplane/crossplane/v2/internal/xfn/cached"
+	"github.com/crossplane/crossplane/v2/internal/xfn/inspected"
 	"github.com/crossplane/crossplane/v2/internal/xpkg"
+	"github.com/crossplane/crossplane/v2/internal/xpkg/signature"
 )
 
 // Command runs the core crossplane controllers.
@@ -128,9 +134,11 @@ type startCommand struct {
 	EnableSignatureVerification       bool `group:"Alpha Features:" help:"Enable support for package signature verification via ImageConfig API."`
 	EnableFunctionResponseCache       bool `group:"Alpha Features:" help:"Enable support for caching composition function responses."`
 	EnableOperations                  bool `group:"Alpha Features:" help:"Enable support for Operations."`
+	EnablePipelineInspector           bool `group:"Alpha Features:" help:"Enable support for emitting function pipeline execution data to a sidecar."`
 
-	XfnCacheDir    string        `default:"/cache/xfn" env:"XFN_CACHE_DIR"     group:"Alpha Features:" help:"Directory used for caching function responses. Requires --enable-function-response-cache."`
-	XfnCacheMaxTTL time.Duration `default:"24h"        env:"XFN_CACHE_MAX_TTL" group:"Alpha Features:" help:"Maximum TTL for cached function responses. Set to 0 to disable. Requires --enable-function-response-cache."`
+	XfnCacheDir             string        `default:"/cache/xfn"                         env:"XFN_CACHE_DIR"             group:"Alpha Features:" help:"Directory used for caching function responses. Requires --enable-function-response-cache."`
+	XfnCacheMaxTTL          time.Duration `default:"24h"                                env:"XFN_CACHE_MAX_TTL"         group:"Alpha Features:" help:"Maximum TTL for cached function responses. Set to 0 to disable. Requires --enable-function-response-cache."`
+	PipelineInspectorSocket string        `default:"/var/run/pipeline-inspector/socket" env:"PIPELINE_INSPECTOR_SOCKET" group:"Alpha Features:" help:"Unix socket path for pipeline inspector sidecar. Requires --enable-pipeline-inspector."`
 
 	EnableDeploymentRuntimeConfigs          bool `default:"true" group:"Beta Features:" help:"Enable support for Deployment Runtime Configs."`
 	EnableUsages                            bool `default:"true" group:"Beta Features:" help:"Enable support for deletion ordering and resource protection with Usages."`
@@ -139,6 +147,7 @@ type startCommand struct {
 	EnableCustomToManagedResourceConversion bool `default:"true" group:"Beta Features:" help:"Enable support CRD to MRD conversion when installing a package."`
 
 	RestrictNamespacedEvents bool `default:"false" help:"Prevent events from being produced on resources that are not namespaced. Useful when crossplane does not have permissions in the default namespace."`
+	WatchCacheNamespaced     bool `default:"false" help:"Restrict resource caching to Crossplane's namespace only. Use this when Crossplane lacks cluster-wide permissions."`
 
 	// These are features that we've removed support for. Crossplane returns an
 	// error when you enable them. This ensures you'll see an explicit and
@@ -182,11 +191,21 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	// They use their own. They're setup later in this method.
 	eb := record.NewBroadcaster()
 
+	cacheOptions := cache.Options{
+		SyncPeriod: &c.SyncInterval,
+	}
+	if c.WatchCacheNamespaced {
+		// This makes the cache controller watch resources only in crossplane's namespace.
+		// Otherwise, it tries to watch resources in all namespaces, and crashes if the
+		// crossplane ServiceAccount doesn't have enough permissions.
+		cacheOptions.DefaultNamespaces = map[string]cache.Config{
+			c.Namespace: {},
+		}
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: s,
-		Cache: cache.Options{
-			SyncPeriod: &c.SyncInterval,
-		},
+		Cache:  cacheOptions,
 		WebhookServer: webhook.NewServer(webhook.Options{
 			CertDir: c.TLSServerCertsDir,
 			TLSOpts: []func(*tls.Config){
@@ -230,7 +249,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		return errors.Wrap(err, "cannot create manager")
 	}
 
-	eb.StartLogging(func(format string, args ...interface{}) {
+	eb.StartLogging(func(format string, args ...any) {
 		log.Debug(fmt.Sprintf(format, args...))
 	})
 	defer eb.Shutdown()
@@ -277,24 +296,14 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 
 	var runner xfn.FunctionRunner = pfr
 
+	if c.EnablePipelineInspector {
+		o.Features.Enable(features.EnableAlphaPipelineInspector)
+		log.Info("Alpha feature enabled", "flag", features.EnableAlphaPipelineInspector)
+	}
+
 	if c.EnableFunctionResponseCache {
 		o.Features.Enable(features.EnableAlphaFunctionResponseCache)
 		log.Info("Alpha feature enabled", "flag", features.EnableAlphaFunctionResponseCache)
-
-		cfrm := cached.NewPrometheusMetrics()
-		metrics.Registry.MustRegister(cfrm)
-
-		// Wrap the packaged function runner with a caching one.
-		cfr := cached.NewFileBackedRunner(pfr, c.XfnCacheDir,
-			cached.WithLogger(log),
-			cached.WithMaxTTL(c.XfnCacheMaxTTL),
-			cached.WithMetrics(cfrm),
-		)
-
-		// Periodically delete expired cache entries.
-		go cfr.GarbageCollectFiles(ctx, 1*time.Minute)
-
-		runner = cfr
 	}
 
 	if c.EnableUsages {
@@ -342,12 +351,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		log.Info("Alpha feature enabled", "flag", features.EnableAlphaOperations)
 	}
 
-	// Claim and XR controllers are started and stopped dynamically by the
-	// ControllerEngine below. When realtime compositions are enabled, they also
-	// start and stop their watches (e.g. of composed resources) dynamically. To
-	// do this, the ControllerEngine must have exclusive ownership of a cache.
-	// This allows it to track what controllers are using the cache's informers.
-	ca, err := cache.New(mgr.GetConfig(), cache.Options{
+	cacheOptionsAPIExt := cache.Options{
 		HTTPClient: mgr.GetHTTPClient(),
 		Scheme:     mgr.GetScheme(),
 		Mapper:     mgr.GetRESTMapper(),
@@ -365,7 +369,20 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 			}
 			log.Debug("Watch error - probably due to CRD being uninstalled", "error", err)
 		},
-	})
+	}
+
+	if c.WatchCacheNamespaced {
+		cacheOptionsAPIExt.DefaultNamespaces = map[string]cache.Config{
+			c.Namespace: {},
+		}
+	}
+
+	// Claim and XR controllers are started and stopped dynamically by the
+	// ControllerEngine below. When realtime compositions are enabled, they also
+	// start and stop their watches (e.g. of composed resources) dynamically. To
+	// do this, the ControllerEngine must have exclusive ownership of a cache.
+	// This allows it to track what controllers are using the cache's informers.
+	ca, err := cache.New(mgr.GetConfig(), cacheOptionsAPIExt)
 	if err != nil {
 		return errors.Wrap(err, "cannot create cache for API extension controllers")
 	}
@@ -439,8 +456,63 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		return errors.Wrap(err, "cannot start garbage collector for custom resource informers")
 	}
 
-	// Automatically fetch required resources.
-	runner = xfn.NewFetchingFunctionRunner(runner, xfn.NewExistingRequiredResourcesFetcher(cached))
+	// Create a memory-cached discovery client for fetching OpenAPI schemas.
+	dc, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		return errors.Wrap(err, "cannot create discovery client for OpenAPI schemas")
+	}
+	oac := xfn.NewCachedOpenAPIClient(memory.NewMemCacheClient(dc))
+	if err := oac.InvalidateOnCRDChanges(ctx, ca); err != nil {
+		return errors.Wrap(err, "cannot setup discovery cache invalidation")
+	}
+
+	// Middleware layering: We want Cache → FetchingFunctionRunner → gRPC.
+	// First, wrap the runner with FetchingFunctionRunner to handle
+	// requirements.
+	runner = xfn.NewFetchingFunctionRunner(runner,
+		xfn.NewExistingRequiredResourcesFetcher(cached),
+		xfn.NewOpenAPIRequiredSchemasFetcher(oac))
+
+	// Then, if caching is enabled, wrap with the cache layer.
+	// This ensures the cache stores final responses after all requirements are fulfilled.
+	if c.EnableFunctionResponseCache {
+		cfrm := xfncached.NewPrometheusMetrics()
+		metrics.Registry.MustRegister(cfrm)
+
+		cfr := xfncached.NewFileBackedRunner(runner, c.XfnCacheDir,
+			xfncached.WithLogger(log),
+			xfncached.WithMaxTTL(c.XfnCacheMaxTTL),
+			xfncached.WithMetrics(cfrm),
+		)
+
+		// Periodically delete expired cache entries.
+		go cfr.GarbageCollectFiles(ctx, 1*time.Minute)
+
+		runner = cfr
+	}
+
+	// Then, last, if pipeline inspection is enabled, wrap with the inspector layer.
+	// This ensures inspection sees requests before and responses after all
+	// other layers, including requirement fetching and response caching.
+	if c.EnablePipelineInspector {
+		ifrm := inspected.NewPrometheusMetrics()
+		metrics.Registry.MustRegister(ifrm)
+
+		inspector, err := inspected.NewSocketPipelineInspector(c.PipelineInspectorSocket)
+		if err != nil {
+			return errors.Wrap(err, "cannot create pipeline inspector")
+		}
+
+		defer func() {
+			if err := inspector.Close(); err != nil {
+				log.Info("Cannot close pipeline inspector", "error", err)
+			}
+		}()
+
+		runner = inspected.NewRunner(runner, inspector,
+			inspected.WithMetrics(ifrm),
+			inspected.WithLogger(log))
+	}
 
 	cbm := circuit.NewPrometheusMetrics()
 	metrics.Registry.MustRegister(cbm)
@@ -449,6 +521,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		Options:                  o,
 		ControllerEngine:         ce,
 		FunctionRunner:           runner,
+		OpenAPIClient:            oac,
 		CircuitBreakerMetrics:    cbm,
 		CircuitBreakerBurst:      c.CircuitBreakerBurst,
 		CircuitBreakerRefillRate: c.CircuitBreakerRefillRate,
@@ -463,6 +536,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		oo := opscontroller.Options{
 			Options:          o,
 			FunctionRunner:   runner,
+			OpenAPIClient:    oac,
 			ControllerEngine: ce,
 		}
 		if err := ops.Setup(mgr, oo); err != nil {
@@ -491,14 +565,10 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	log.Info("Package Runtime for Provider: " + string(pr.For(pkgv1.ProviderKind)))
 	log.Info("Package Runtime for Function: " + string(pr.For(pkgv1.FunctionKind)))
 
-	po := pkgcontroller.Options{
-		Options:                          o,
-		Cache:                            xpkg.NewFsPackageCache(c.XpkgCacheDir, afero.NewOsFs()),
-		Namespace:                        c.Namespace,
-		ServiceAccount:                   c.ServiceAccount,
-		FetcherOptions:                   []xpkg.FetcherOpt{xpkg.WithUserAgent(c.UserAgent)},
-		PackageRuntime:                   pr,
-		MaxConcurrentPackageEstablishers: c.MaxConcurrentPackageEstablishers,
+	fetcherOpts := []xpkg.FetcherOpt{
+		xpkg.WithNamespace(c.Namespace),
+		xpkg.WithServiceAccount(c.ServiceAccount),
+		xpkg.WithUserAgent(c.UserAgent),
 	}
 
 	// We need to set the TUF_ROOT environment variable so that the TUF client
@@ -519,7 +589,46 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 			return errors.Wrap(err, "cannot parse CA bundle")
 		}
 
-		po.FetcherOptions = append(po.FetcherOptions, xpkg.WithCustomCA(rootCAs))
+		fetcherOpts = append(fetcherOpts, xpkg.WithCustomCA(rootCAs))
+	}
+
+	cs, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		return errors.Wrap(err, "cannot create kubernetes clientset")
+	}
+
+	fetcher, err := xpkg.NewK8sFetcher(cs, fetcherOpts...)
+	if err != nil {
+		return errors.Wrap(err, "cannot build package fetcher")
+	}
+
+	metaScheme, err := xpkg.BuildMetaScheme()
+	if err != nil {
+		return errors.Wrap(err, "cannot build package meta scheme")
+	}
+
+	objScheme, err := xpkg.BuildObjectScheme()
+	if err != nil {
+		return errors.Wrap(err, "cannot build package object scheme")
+	}
+
+	pkgCache := xpkg.NewFsPackageCache(c.XpkgCacheDir, afero.NewOsFs())
+
+	var val signature.Validator = signature.NopValidator{}
+	if o.Features.Enabled(features.EnableAlphaSignatureVerification) {
+		val, err = signature.NewCosignValidator(mgr.GetClient(), cs, c.Namespace, c.ServiceAccount)
+		if err != nil {
+			return errors.Wrap(err, "cannot create cosign signature validator")
+		}
+	}
+
+	po := pkgcontroller.Options{
+		Options:                          o,
+		Client:                           xpkg.NewCachedClient(fetcher, parser.New(metaScheme, objScheme), pkgCache, xpkg.NewImageConfigStore(mgr.GetClient(), c.Namespace), val),
+		Namespace:                        c.Namespace,
+		ServiceAccount:                   c.ServiceAccount,
+		PackageRuntime:                   pr,
+		MaxConcurrentPackageEstablishers: c.MaxConcurrentPackageEstablishers,
 	}
 
 	if err := pkg.Setup(mgr, po); err != nil {

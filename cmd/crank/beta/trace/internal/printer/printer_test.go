@@ -36,10 +36,10 @@ type DummyManifestOpt func(*unstructured.Unstructured)
 // other tests, can be customized with DummyManifestOpt.
 func DummyManifest(kind, name string, opts ...DummyManifestOpt) unstructured.Unstructured {
 	m := unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "test.cloud/v1alpha1",
 			"kind":       kind,
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": name,
 			},
 		},
@@ -198,6 +198,41 @@ func GetComplexResource() *resource.Resource {
 						}, xpv1.Condition{
 							Type:   "Synced",
 							Status: "Unknown",
+						}),
+					},
+				},
+			},
+		},
+	}
+}
+
+// GetSimpleResource returns a simple resource with children.
+func GetSimpleResource() *resource.Resource {
+	return &resource.Resource{
+		Unstructured: DummyNamespacedResource("SimpleResource", "simple-resource", "default", xpv1.Condition{
+			Type:   "Synced",
+			Status: "True",
+		}, xpv1.Condition{
+			Type:   "Ready",
+			Status: "True",
+		}),
+		Children: []*resource.Resource{
+			{
+				Unstructured: DummyClusterScopedResource("XSimpleResource", "simple-resource-hash", xpv1.Condition{
+					Type:   "Synced",
+					Status: "True",
+				}, xpv1.Condition{
+					Type:   "Ready",
+					Status: "True",
+				}),
+				Children: []*resource.Resource{
+					{
+						Unstructured: DummyComposedResource("Something", "simple-resource-something-hash", "something", xpv1.Condition{
+							Type:   "Synced",
+							Status: "True",
+						}, xpv1.Condition{
+							Type:   "Ready",
+							Status: "True",
 						}),
 					},
 				},

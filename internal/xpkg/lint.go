@@ -17,7 +17,7 @@ limitations under the License.
 package xpkg
 
 import (
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	admv1 "k8s.io/api/admissionregistration/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	extv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -82,7 +82,7 @@ func NewFunctionLinter() parser.Linter {
 	return parser.NewPackageLinter(
 		parser.PackageLinterFns(OneMeta),
 		parser.ObjectLinterFns(IsFunction, PackageValidSemver),
-		parser.ObjectLinterFns())
+		parser.ObjectLinterFns(IsCRD))
 }
 
 // OneMeta checks that there is only one meta object in the package.

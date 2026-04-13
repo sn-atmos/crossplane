@@ -20,13 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
-
-	"github.com/crossplane/crossplane/v2/internal/dag"
-)
-
-var (
-	_ dag.Node = &Dependency{}
-	_ dag.Node = &LockPackage{}
 )
 
 // A PackageType is a type of package.
@@ -55,6 +48,7 @@ type LockPackage struct {
 	// Type is the type of package.
 	// +kubebuilder:validation:Enum=Configuration;Provider;Function
 	// +optional
+	//
 	// Deprecated: Specify an apiVersion and kind instead.
 	Type *PackageType `json:"type"`
 
@@ -70,16 +64,6 @@ type LockPackage struct {
 
 	// ParentConstraints is a list of constraints that are passed down from the parent package to the dependency.
 	ParentConstraints []string `json:"-"` // NOTE(ezgidemirel): We don't want to expose this field in the API.
-}
-
-// ToNodes converts LockPackages to DAG nodes.
-func ToNodes(pkgs ...LockPackage) []dag.Node {
-	nodes := make([]dag.Node, len(pkgs))
-	for i, r := range pkgs {
-		nodes[i] = &r
-	}
-
-	return nodes
 }
 
 // Identifier returns the source of a LockPackage.
@@ -102,31 +86,6 @@ func (l *LockPackage) AddParentConstraints(pc []string) {
 	l.ParentConstraints = append(l.ParentConstraints, pc...)
 }
 
-// Neighbors returns dependencies of a LockPackage.
-func (l *LockPackage) Neighbors() []dag.Node {
-	nodes := make([]dag.Node, len(l.Dependencies))
-	for i, r := range l.Dependencies {
-		nodes[i] = &r
-	}
-
-	return nodes
-}
-
-// AddNeighbors adds dependencies to a LockPackage and
-// updates the parent constraints of the dependencies in the DAG.
-func (l *LockPackage) AddNeighbors(nodes ...dag.Node) error {
-	for _, n := range nodes {
-		for _, dep := range l.Dependencies {
-			if dep.Identifier() == n.Identifier() {
-				n.AddParentConstraints([]string{dep.Constraints})
-				break
-			}
-		}
-	}
-
-	return nil
-}
-
 // A Dependency is a dependency of a package in the lock.
 type Dependency struct {
 	// Package is the OCI image name without a tag or digest.
@@ -143,6 +102,7 @@ type Dependency struct {
 	// Type is the type of package. Can be either Configuration or Provider.
 	// +kubebuilder:validation:Enum=Configuration;Provider;Function
 	// +optional
+	//
 	// Deprecated: Specify an apiVersion and kind instead.
 	Type *PackageType `json:"type"`
 
@@ -172,21 +132,6 @@ func (d *Dependency) GetParentConstraints() []string {
 // AddParentConstraints appends passed constraints to the existing parent constraints.
 func (d *Dependency) AddParentConstraints(pc []string) {
 	d.ParentConstraints = append(d.ParentConstraints, pc...)
-}
-
-// Neighbors in is a no-op for dependencies because we are not yet aware of its
-// dependencies.
-func (d *Dependency) Neighbors() []dag.Node {
-	return nil
-}
-
-// AddNeighbors adds parent constraints to a dependency in the DAG.
-func (d *Dependency) AddNeighbors(nodes ...dag.Node) error {
-	for _, n := range nodes {
-		n.AddParentConstraints([]string{d.Constraints})
-	}
-
-	return nil
 }
 
 // +kubebuilder:object:root=true

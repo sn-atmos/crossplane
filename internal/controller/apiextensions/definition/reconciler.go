@@ -56,6 +56,7 @@ import (
 	"github.com/crossplane/crossplane/v2/internal/engine"
 	"github.com/crossplane/crossplane/v2/internal/features"
 	"github.com/crossplane/crossplane/v2/internal/xcrd"
+	"github.com/crossplane/crossplane/v2/internal/xfn"
 )
 
 const (
@@ -515,6 +516,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	fc := composite.NewFunctionComposer(r.engine.GetCached(), r.engine.GetUncached(), r.options.FunctionRunner,
 		composite.WithComposedResourceObserver(composite.NewExistingComposedResourceObserver(r.engine.GetCached(), r.engine.GetUncached(), fetcher)),
 		composite.WithCompositeConnectionDetailsFetcher(fetcher),
+		composite.WithRequiredSchemasFetcher(xfn.NewOpenAPIRequiredSchemasFetcher(r.options.OpenAPIClient)),
 	)
 
 	controllerName := composite.ControllerName(d.GetName())
@@ -532,13 +534,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		schema = ucomposite.SchemaLegacy
 	}
 
+	defaultCompositionSelector := composite.NewAPIDefaultCompositionSelector(r.engine.GetCached(), *meta.ReferenceTo(d, v1.CompositeResourceDefinitionGroupVersionKind), r.record)
+
 	ro := []composite.ReconcilerOption{
 		composite.WithCompositeSchema(schema),
 		composite.WithCompositionSelector(composite.NewCompositionSelectorChain(
 			composite.NewEnforcedCompositionSelector(r.client.Client, corev1.ObjectReference{Name: d.Name}, r.record),
-			composite.NewAPIDefaultCompositionSelector(r.engine.GetCached(), *meta.ReferenceTo(d, v1.CompositeResourceDefinitionGroupVersionKind), r.record),
+			defaultCompositionSelector,
 			composite.NewAPILabelSelectorResolver(r.engine.GetCached()),
 		)),
+		composite.WithCompositionRevisionSelector(defaultCompositionSelector),
 		composite.WithLogger(r.log.WithValues("controller", controllerName)),
 		composite.WithRecorder(r.record.WithAnnotations("controller", controllerName)),
 		composite.WithPollInterval(r.options.PollInterval),

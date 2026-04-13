@@ -20,7 +20,7 @@ jobs:
       supported_releases: ${{ steps.get-releases.outputs.supported_releases }}
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -104,7 +104,7 @@ jobs:
 
       # we log to DockerHub to avoid rate limiting
       - name: Login To DockerHub
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
@@ -115,21 +115,21 @@ jobs:
         run: docker pull ${{ matrix.image }}:${{ env.tag }}
 
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
         with:
           image-ref: ${{ matrix.image }}:${{ env.tag }}
           format: 'sarif'
           output: 'trivy-results.sarif'
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: trivy-${{ env.escaped_filename }}.sarif
           path: trivy-results.sarif
           retention-days: 3
 
       - name: Upload Trivy Scan Results To GitHub Security Tab
-        uses: github/codeql-action/upload-sarif@497990dfed22177a82ba1bbab381bc8f6d27058f # v3
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
         with:
           sarif_file: 'trivy-results.sarif'
           category: ${{ matrix.image }}:${{ env.tag }}

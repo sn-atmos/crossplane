@@ -28,6 +28,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/step"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
@@ -54,12 +55,13 @@ func (fn RequiredResourcesFetcherFn) Fetch(ctx context.Context, rs *fnv1.Resourc
 type FetchingFunctionRunner struct {
 	wrapped   FunctionRunner
 	resources RequiredResourcesFetcher
+	schemas   RequiredSchemasFetcher
 }
 
 // NewFetchingFunctionRunner returns a FunctionRunner that supports fetching
 // required resources.
-func NewFetchingFunctionRunner(r FunctionRunner, f RequiredResourcesFetcher) *FetchingFunctionRunner {
-	return &FetchingFunctionRunner{wrapped: r, resources: f}
+func NewFetchingFunctionRunner(r FunctionRunner, rf RequiredResourcesFetcher, sf RequiredSchemasFetcher) *FetchingFunctionRunner {
+	return &FetchingFunctionRunner{wrapped: r, resources: rf, schemas: sf}
 }
 
 // RunFunction runs a function, repeatedly fetching any required resources it asks
@@ -68,11 +70,15 @@ func (c *FetchingFunctionRunner) RunFunction(ctx context.Context, name string, r
 	// Used to store the requirements returned at the previous iteration.
 	var requirements *fnv1.Requirements
 
-	// Preserve bootstrap required resources from the initial request.
-	bootstrap := maps.Clone(req.GetRequiredResources())
+	// Preserve bootstrap required resources and schemas from the initial request.
+	bootstrapResources := maps.Clone(req.GetRequiredResources())
+	bootstrapSchemas := maps.Clone(req.GetRequiredSchemas())
 
-	for i := int64(0); i <= MaxRequirementsIterations; i++ {
-		rsp, err := c.wrapped.RunFunction(ctx, name, req)
+	for i := int32(0); i <= MaxRequirementsIterations; i++ {
+		// Update the iteration counter in the context for downstream components.
+		iterCtx := step.ContextWithStepIteration(ctx, i)
+
+		rsp, err := c.wrapped.RunFunction(iterCtx, name, req)
 		if err != nil {
 			// I can't think of any useful info to wrap this error with.
 			return nil, err
@@ -96,9 +102,15 @@ func (c *FetchingFunctionRunner) RunFunction(ctx context.Context, name string, r
 
 		// Clean up resources from the previous iteration to store the new ones.
 		req.ExtraResources = make(map[string]*fnv1.Resources) //nolint:staticcheck // Supporting deprecated field for backward compatibility
-		req.RequiredResources = maps.Clone(bootstrap)
+		req.RequiredResources = maps.Clone(bootstrapResources)
 		if req.RequiredResources == nil {
 			req.RequiredResources = make(map[string]*fnv1.Resources)
+		}
+
+		// Clean up schemas from the previous iteration to store the new ones.
+		req.RequiredSchemas = maps.Clone(bootstrapSchemas)
+		if req.RequiredSchemas == nil {
+			req.RequiredSchemas = make(map[string]*fnv1.Schema)
 		}
 
 		// Fetch the requested resources and add them to the desired state.
@@ -121,6 +133,15 @@ func (c *FetchingFunctionRunner) RunFunction(ctx context.Context, name string, r
 
 			// Resources would be nil in case of not found resources.
 			req.RequiredResources[name] = resources
+		}
+
+		for name, selector := range newRequirements.GetSchemas() {
+			schema, err := c.schemas.Fetch(ctx, selector)
+			if err != nil {
+				return nil, errors.Wrapf(err, "fetching schema for %s", name)
+			}
+
+			req.RequiredSchemas[name] = schema
 		}
 
 		// Pass down the updated context across iterations.
