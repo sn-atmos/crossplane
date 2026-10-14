@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package watchoperation manages the lifecycle of Watched controllers.
 package watchoperation
 
 import (
@@ -31,7 +30,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	opscontroller "github.com/crossplane/crossplane/v2/internal/controller/ops/controller"
 	"github.com/crossplane/crossplane/v2/internal/engine"
 )

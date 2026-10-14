@@ -1,0 +1,297 @@
+# Build functions for Crossplane.
+#
+# All functions are builders that take an attrset of arguments.
+# This makes dependencies explicit and keeps flake.nix as a clean manifest.
+#
+# Key primitives used here:
+#   pkgs.buildGoModule      - nixpkgs' Go builder, vendors deps (https://nixos.org/manual/nixpkgs/stable/#ssec-go-modules)
+#   pkgs.dockerTools        - Build OCI images without Docker (https://nixos.org/manual/nixpkgs/stable/#sec-pkgs-dockerTools)
+#   pkgs.runCommand         - Run a shell script, capture output directory as $out
+{ pkgs, self }:
+let
+  # Go builders backed by a single shared per-module vendor cache.
+  # See nix/go-builders.nix.
+  inherit (import ./go-builders.nix { inherit pkgs self; })
+    buildRoot
+    buildRootFor
+    rootVendor
+    apisVendor
+    ;
+
+  # Build a Go binary for a specific platform.
+  goBinary =
+    {
+      version,
+      pname,
+      subPackage,
+      platform,
+    }:
+    let
+      ext = if platform.os == "windows" then ".exe" else "";
+    in
+    (buildRootFor platform) {
+      pname = "${pname}-${platform.os}-${platform.arch}";
+      inherit version;
+      src = self;
+      subPackages = [ subPackage ];
+
+      env.CGO_ENABLED = "0";
+      doCheck = false;
+
+      ldflags = [
+        "-s"
+        "-w"
+        "-X=github.com/crossplane/crossplane-runtime/v2/pkg/version.version=${version}"
+      ];
+
+      postInstall = ''
+        if [ -d $out/bin/${platform.os}_${platform.arch} ]; then
+          mv $out/bin/${platform.os}_${platform.arch}/* $out/bin/
+          rmdir $out/bin/${platform.os}_${platform.arch}
+        fi
+      '';
+
+      postFixup = ''
+        cd $out/bin
+        sha256sum ${pname}${ext} | head -c 64 > ${pname}${ext}.sha256
+      '';
+
+      meta = {
+        description = "Crossplane - The cloud native control plane framework";
+        homepage = "https://crossplane.io";
+        license = pkgs.lib.licenses.asl20;
+        mainProgram = pname;
+      };
+    };
+
+  # Build OCI image arguments for dockerTools.
+  # This matches the distroless base image Crossplane previously used.
+  # https://github.com/GoogleContainerTools/distroless
+  mkImageArgs =
+    {
+      version,
+      crossplaneBin,
+      arch,
+    }:
+    let
+      passwd = pkgs.writeText "passwd" ''
+        root:x:0:0:root:/root:/sbin/nologin
+        nobody:x:65534:65534:nobody:/nonexistent:/sbin/nologin
+        nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin
+      '';
+      group = pkgs.writeText "group" ''
+        root:x:0:
+        nobody:x:65534:
+        nonroot:x:65532:
+      '';
+      nsswitch = pkgs.writeText "nsswitch.conf" ''
+        hosts: files dns
+      '';
+    in
+    {
+      name = "crossplane/crossplane";
+      tag = version;
+      created = "now";
+      architecture = arch;
+
+      contents = [
+        crossplaneBin
+        pkgs.cacert
+        pkgs.tzdata
+        pkgs.iana-etc
+      ];
+
+      extraCommands = ''
+        mkdir -p tmp home/nonroot etc crds webhookconfigurations
+        chmod 1777 tmp
+        cp ${passwd} etc/passwd
+        cp ${group} etc/group
+        cp ${nsswitch} etc/nsswitch.conf
+        cp -r ${self}/cluster/crds/* crds/
+        cp -r ${self}/cluster/webhookconfigurations/* webhookconfigurations/
+      '';
+
+      config = {
+        Entrypoint = [ "/bin/crossplane" ];
+        ExposedPorts = {
+          "8080/tcp" = { };
+        };
+        User = "65532";
+        Env = [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-certificates.crt"
+        ];
+        Labels = {
+          "org.opencontainers.image.source" = "https://github.com/crossplane/crossplane";
+          "org.opencontainers.image.version" = version;
+        };
+      };
+    };
+
+in
+{
+  # Vendored-dependency derivations, one per Go module. Exposed so
+  # `nix run .#tidy` can rebuild them to capture fresh vendor hashes. Building
+  # these realises only the vendor dir, not the binaries.
+  vendor = {
+    root = rootVendor;
+    apis = apisVendor;
+  };
+
+  # OCI images for all Linux platforms.
+  images =
+    { version, platforms }:
+    builtins.listToAttrs (
+      map (p: {
+        name = "${p.os}-${p.arch}";
+        value = {
+          bin = goBinary {
+            inherit version;
+            pname = "crossplane";
+            subPackage = "cmd/crossplane";
+            platform = p;
+          };
+          image = pkgs.dockerTools.buildLayeredImage (mkImageArgs {
+            inherit version;
+            inherit (p) arch;
+            crossplaneBin = goBinary {
+              inherit version;
+              pname = "crossplane";
+              subPackage = "cmd/crossplane";
+              platform = p;
+            };
+          });
+        };
+      }) platforms
+    );
+
+  # Helm chart package.
+  chart =
+    { version }:
+    let
+      chartVersion = builtins.substring 1 (-1) version;
+    in
+    pkgs.runCommand "crossplane-helm-chart-${chartVersion}"
+      { nativeBuildInputs = [ pkgs.kubernetes-helm ]; }
+      ''
+        mkdir -p $out
+        cp -r ${self}/cluster/charts/crossplane chart
+        chmod -R u+w chart
+        cd chart
+        helm dependency update 2>/dev/null || true
+        helm package --version ${chartVersion} --app-version ${chartVersion} -d $out .
+      '';
+
+  # E2E test binary.
+  e2e =
+    { version }:
+    buildRoot {
+      pname = "crossplane-e2e";
+      inherit version;
+      src = self;
+
+      env.CGO_ENABLED = "0";
+
+      buildPhase = ''
+        runHook preBuild
+        go test -c -o e2e ./test/e2e
+        runHook postBuild
+      '';
+
+      installPhase = ''
+        mkdir -p $out/bin
+        cp e2e $out/bin/
+      '';
+
+      doCheck = false;
+    };
+
+  # Image args for streaming (used by apps.streamImage).
+  imageArgs =
+    { version, arch }:
+    mkImageArgs {
+      inherit version arch;
+      crossplaneBin = goBinary {
+        inherit version;
+        pname = "crossplane";
+        subPackage = "cmd/crossplane";
+        platform = {
+          os = "linux";
+          inherit arch;
+        };
+      };
+    };
+
+  # Full release package with all artifacts.
+  release =
+    {
+      version,
+      goPlatforms,
+      imagePlatforms,
+    }:
+    let
+      chartVersion = builtins.substring 1 (-1) version;
+
+      crossplaneBins = builtins.listToAttrs (
+        map (p: {
+          name = "${p.os}-${p.arch}";
+          value = goBinary {
+            inherit version;
+            pname = "crossplane";
+            subPackage = "cmd/crossplane";
+            platform = p;
+          };
+        }) goPlatforms
+      );
+
+      crossplaneImages = builtins.listToAttrs (
+        map (p: {
+          name = "${p.os}-${p.arch}";
+          value = {
+            bin = crossplaneBins."${p.os}-${p.arch}";
+            image = pkgs.dockerTools.buildLayeredImage (mkImageArgs {
+              inherit version;
+              inherit (p) arch;
+              crossplaneBin = crossplaneBins."${p.os}-${p.arch}";
+            });
+          };
+        }) imagePlatforms
+      );
+
+      chart =
+        pkgs.runCommand "crossplane-helm-chart-${chartVersion}"
+          { nativeBuildInputs = [ pkgs.kubernetes-helm ]; }
+          ''
+            mkdir -p $out
+            cp -r ${self}/cluster/charts/crossplane chart
+            chmod -R u+w chart
+            cd chart
+            helm dependency update 2>/dev/null || true
+            helm package --version ${chartVersion} --app-version ${chartVersion} -d $out .
+          '';
+    in
+    pkgs.runCommand "crossplane-release-${version}" { } ''
+      mkdir -p $out/bin $out/bundle $out/charts $out/images
+
+      ${pkgs.lib.concatMapStrings (p: ''
+        mkdir -p $out/bin/${p.os}_${p.arch}
+        cp ${crossplaneBins."${p.os}-${p.arch}"}/bin/* $out/bin/${p.os}_${p.arch}/
+        ${
+          let
+            ext = if p.os == "windows" then ".exe" else "";
+          in
+          ''
+            chmod 755 $out/bin/${p.os}_${p.arch}/crossplane${ext}
+            chmod 644 $out/bin/${p.os}_${p.arch}/crossplane${ext}.sha256
+          ''
+        }
+      '') goPlatforms}
+
+      cp ${chart}/* $out/charts/
+
+      ${pkgs.lib.concatMapStrings (p: ''
+        mkdir -p $out/images/${p.os}_${p.arch}
+        cp ${crossplaneImages."${p.os}-${p.arch}".image} $out/images/${p.os}_${p.arch}/image.tar.gz
+      '') imagePlatforms}
+    '';
+}

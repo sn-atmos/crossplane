@@ -19,7 +19,7 @@ package v1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 // +kubebuilder:object:root=true
@@ -30,7 +30,7 @@ import (
 // Crossplane with support for a new kind of composition function.
 //
 // Read the Crossplane documentation for
-// [more information about Functions](https://docs.crossplane.io/latest/concepts/composition-functions).
+// [more information about Functions](https://docs.crossplane.io/latest/packages/functions/).
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="INSTALLED",type="string",JSONPath=".status.conditions[?(@.type=='Installed')].status"
@@ -55,7 +55,7 @@ type FunctionSpec struct {
 
 // FunctionStatus represents the observed state of a Function.
 type FunctionStatus struct {
-	xpv1.ConditionedStatus `json:",inline"`
+	xpv2.ConditionedStatus `json:",inline"`
 	PackageStatus          `json:",inline"`
 }
 
@@ -87,7 +87,8 @@ type FunctionRevisionSpec struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='RevisionHealthy')].status"
-// +kubebuilder:printcolumn:name="RUNTIME",type="string",JSONPath=".status.conditions[?(@.type=='RuntimeHealthy')].status"
+// +kubebuilder:printcolumn:name="RUNTIME-HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='RuntimeHealthy')].status"
+// +kubebuilder:printcolumn:name="RUNTIME-ACTIVE",type="string",JSONPath=".status.conditions[?(@.type=='RuntimeActive')].status"
 // +kubebuilder:printcolumn:name="IMAGE",type="string",JSONPath=".spec.image"
 // +kubebuilder:printcolumn:name="STATE",type="string",JSONPath=".spec.desiredState"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"

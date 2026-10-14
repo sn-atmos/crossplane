@@ -28,22 +28,23 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
 )
 
 // CustomResourceDefinition type metadata.
 //
 //nolint:gochecknoglobals // These should be globals.
 var (
-	customResourceDefinition     = reflect.TypeOf(extv1.CustomResourceDefinition{}).Name()
+	customResourceDefinition     = reflect.TypeFor[extv1.CustomResourceDefinition]().Name()
 	customResourceDefinitionKind = extv1.SchemeGroupVersion.WithKind(customResourceDefinition)
 )
 
 // Non-managed resource kinds that should not be converted to MRDs.
 const (
-	kindProviderConfig        = "ProviderConfig"
-	kindClusterProviderConfig = "ClusterProviderConfig"
-	kindProviderConfigUsage   = "ProviderConfigUsage"
+	kindProviderConfig             = "ProviderConfig"
+	kindClusterProviderConfig      = "ClusterProviderConfig"
+	kindProviderConfigUsage        = "ProviderConfigUsage"
+	kindClusterProviderConfigUsage = "ClusterProviderConfigUsage"
 )
 
 // CustomToManagedResourceDefinitions converts managed resource CRDs to MRDs
@@ -59,7 +60,7 @@ func CustomToManagedResourceDefinitions(defaultActive bool, objects ...runtime.O
 			obj := obj.DeepCopyObject()
 			// The object has to be either an unstructured.Unstructured object or a CustomResourceDefinition
 			switch o := obj.(type) {
-			// to covert, all we need to worry about is the metadata and spec.state.
+			// to convert, all we need to worry about is the metadata and spec.state.
 			case *unstructured.Unstructured:
 				if !isManagedResource(o.Object) {
 					// Keep non-managed resources (like ProviderConfig) as regular CRDs
@@ -112,7 +113,7 @@ func isManagedResource(crd map[string]any) bool {
 	}
 
 	switch kind {
-	case kindProviderConfig, kindClusterProviderConfig, kindProviderConfigUsage:
+	case kindProviderConfig, kindClusterProviderConfig, kindProviderConfigUsage, kindClusterProviderConfigUsage:
 		return false // These are not managed resources
 	default:
 		return true // Everything else is assumed to be a managed resource

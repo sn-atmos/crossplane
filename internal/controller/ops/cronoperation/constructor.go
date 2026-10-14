@@ -24,7 +24,7 @@ import (
 	"github.com/robfig/cron/v3"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
@@ -32,7 +32,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	opscontroller "github.com/crossplane/crossplane/v2/internal/controller/ops/controller"
 )
 
@@ -41,7 +41,7 @@ import (
 func Setup(mgr ctrl.Manager, o opscontroller.Options) error {
 	name := "ops/" + strings.ToLower(v1alpha1.CronOperationGroupKind)
 
-	r := NewReconciler(mgr,
+	r := NewReconciler(mgr.GetClient(),
 		WithLogger(o.Logger.WithValues("controller", name)),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)))
 
@@ -78,9 +78,9 @@ func WithScheduler(s Scheduler) ReconcilerOption {
 }
 
 // NewReconciler returns a Reconciler of CronOperations.
-func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
+func NewReconciler(c client.Client, opts ...ReconcilerOption) *Reconciler {
 	r := &Reconciler{
-		client:     mgr.GetClient(),
+		client:     c,
 		log:        logging.NewNopLogger(),
 		record:     event.NewNopRecorder(),
 		conditions: conditions.ObservedGenerationPropagationManager{},

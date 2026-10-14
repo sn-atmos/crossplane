@@ -408,15 +408,13 @@ func TestTokenBucketBreakerConcurrency(t *testing.T) {
 	// Run concurrent operations
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 10 {
 				breaker.RecordEvent(ctx, target, source, EventAllowed)
 				breaker.GetState(ctx, target)
 				breaker.RecordEvent(ctx, target, source, EventHalfOpenAllowed)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -431,6 +429,87 @@ func TestTokenBucketBreakerConcurrency(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, state, cmpopts.EquateApproxTime(2*time.Second)); diff != "" {
 		t.Errorf("Open circuit state mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestTokenBucketBreakerResetTarget(t *testing.T) {
+	target := types.NamespacedName{Name: "test-xr", Namespace: "default"}
+	source := EventSource{
+		GVK:       schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Bucket"},
+		Name:      "test-bucket",
+		Namespace: "default",
+	}
+
+	type args struct {
+		ctx    context.Context
+		target types.NamespacedName
+	}
+
+	cases := map[string]struct {
+		reason  string
+		breaker *TokenBucketBreaker
+		setup   func(*TokenBucketBreaker)
+		args    args
+		want    State
+	}{
+		"ResetOpenCircuit": {
+			reason: "Resetting a target with an open circuit should clear state and allow fresh events through.",
+			breaker: NewTokenBucketBreaker("test-controller",
+				WithBurst(3),
+				WithRefillRatePerSecond(0.001),
+				WithOpenDuration(5*time.Minute),
+			),
+			setup: func(b *TokenBucketBreaker) {
+				// Exhaust tokens to open circuit.
+				for range 4 {
+					b.RecordEvent(context.Background(), target, source, EventAllowed)
+				}
+			},
+			args: args{
+				ctx:    context.Background(),
+				target: target,
+			},
+			want: State{IsOpen: false},
+		},
+		"ResetClosedCircuit": {
+			reason: "Resetting a target with a closed circuit should be a safe no-op.",
+			breaker: NewTokenBucketBreaker("test-controller",
+				WithBurst(10),
+				WithRefillRatePerSecond(1.0),
+			),
+			setup: func(b *TokenBucketBreaker) {
+				b.RecordEvent(context.Background(), target, source, EventAllowed)
+			},
+			args: args{
+				ctx:    context.Background(),
+				target: target,
+			},
+			want: State{IsOpen: false},
+		},
+		"ResetUnknownTarget": {
+			reason:  "Resetting an unknown target should be a no-op.",
+			breaker: NewTokenBucketBreaker("test-controller"),
+			args: args{
+				ctx:    context.Background(),
+				target: types.NamespacedName{Name: "unknown", Namespace: "default"},
+			},
+			want: State{IsOpen: false},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if tc.setup != nil {
+				tc.setup(tc.breaker)
+			}
+
+			tc.breaker.ResetTarget(tc.args.ctx, tc.args.target)
+
+			got := tc.breaker.GetState(tc.args.ctx, tc.args.target)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("%s\nTokenBucketBreaker.ResetTarget(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }
 

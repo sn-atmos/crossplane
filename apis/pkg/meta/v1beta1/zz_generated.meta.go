@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Generated from apis/pkg/meta/v1/meta.go by ./hack/duplicate_api_type.sh. DO NOT EDIT.
+// Generated from pkg/meta/v1/meta.go by ./hack/duplicate_api_type.sh. DO NOT EDIT.
 
 package v1beta1
 
@@ -62,18 +62,21 @@ type Dependency struct {
 	// Provider is the name of a Provider package image.
 	// Must be a fully qualified image name, including the registry,
 	// +optional
+	//
 	// Deprecated: Specify an apiVersion and kind instead.
 	Provider *string `json:"provider,omitempty"`
 
 	// Configuration is the name of a Configuration package image.
 	// Must be a fully qualified image name, including the registry,
 	// +optional
+	//
 	// Deprecated: Specify an apiVersion, kind, and package instead.
 	Configuration *string `json:"configuration,omitempty"`
 
 	// Function is the name of a Function package image.
 	// Must be a fully qualified image name, including the registry,
 	// +optional
+	//
 	// Deprecated: Specify an apiVersion, kind, and package instead.
 	Function *string `json:"function,omitempty"`
 

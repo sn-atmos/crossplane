@@ -104,27 +104,56 @@ and coding skill set.
 ## Establishing a Development Environment
 
 > The Crossplane project consists of several repositories under the crossplane
-> and crossplane-contrib GitHub organisations. We're experimenting with
-> [Earthly] in this repository (crossplane) and crossplane-runtime. Most other
-> repositories use a `Makefile`. To establish a development environment for a
-> repository with a `Makefile`, try running `make && make help`.
+> and crossplane-contrib GitHub organisations. This repository uses [Nix] for
+> builds. Most other repositories use a `Makefile`. To establish a development
+> environment for a repository with a `Makefile`, try running `make && make help`.
 
-Crossplane is written in [Go]. You don't need to have Go installed to contribute
-code to Crossplane but it helps to use an editor that understands Go.
+Crossplane is written in [Go]. For regular development you'll need Go and an IDE
+installed, but for small contributions you don't need to install Go. You can use
+any text editor and validate your changes with `./nix.sh flake check`.
 
 To setup a Crossplane development environment:
 
 1. Fork and clone this repository.
-1. Install [Docker][get-docker] and [Earthly][get-earthly].
+1. Install [Docker][get-docker].
+1. Run `./nix.sh run .#test` to verify everything works.
 
-Use the `earthly` command to build and test Crossplane. Run `earthly doc` to see
-available build targets.
+The first run takes ~2-3 minutes to download tooling into a Docker volume.
+Subsequent runs take seconds because everything is cached - the Nix store, Go
+modules, Go build cache, and Docker images all persist across runs.
 
-Useful targets include:
+Use your editor or IDE to write code, then validate with `nix.sh`:
 
-* `earthly +reviewable` - Run code generators, linters, and unit tests.
-* `earthly -P +e2e` - Run end-to-end tests.
-* `earthly +hack` - Build Crossplane and deploy it to a local `kind` cluster.
+```sh
+./nix.sh run .#test         # Run unit tests (uses local caches, fast)
+./nix.sh run .#lint         # Run linters (with --fix)
+./nix.sh run .#generate     # Run code generators
+./nix.sh run .#e2e          # Run E2E tests (starts a kind cluster)
+./nix.sh run .#hack         # Start kind cluster with your local changes
+./nix.sh build              # Build binaries and images (see the result/ dir)
+./nix.sh flake check        # Run checks hermetically, like CI
+
+./nix.sh flake show         # List all available commands
+```
+
+Build output goes to `./result/`. For example, after `./nix.sh build` you'll
+find binaries in `./result/bin/` and container images as tarballs.
+
+### Native Nix (Optional)
+
+Native Nix requires root to install, but is useful if you:
+
+* Want `nix develop` to use your shell and dotfiles, not a generic bash shell.
+* Don't want to use Docker.
+* Want to use Nix as a general-purpose package manager.
+
+If you prefer to install Nix natively, [install it][install-nix] and
+[enable flakes][enable-flakes], then run commands without the `./nix.sh` wrapper:
+
+```sh
+nix run .#test
+nix develop -c $SHELL    # Drop into your shell with Go, kubectl, helm, etc.
+```
 
 ## Checklist Cheat Sheet
 
@@ -132,7 +161,9 @@ Wondering whether something on the pull request checklist applies to your PR?
 Generally:
 
 * Everyone must read and follow this contribution process.
-* Every PR must run (and pass) `earthly +reviewable`.
+* Everyone must read and follow our [AI policy]. We want authentic collaboration
+  with other humans.
+* Every PR must run (and pass) `./nix.sh flake check`.
 * Most PRs that touch code should touch unit tests. We want ~80% coverage.
 * Any significant feature should be covered by E2E tests. If you're adding a new
   feature, you should probably be adding or updating E2Es.
@@ -179,7 +210,7 @@ Ensure each of your commits is signed-off in compliance with the [Developer
 Certificate of Origin] by using `git commit -s`. The Crossplane project highly
 values readable, idiomatic Go code. Familiarise yourself with the
 [Coding Style](#coding-style) section below and try to preempt any comments your
-reviewers would otherwise leave. Run `earthly +reviewable` to lint your change.
+reviewers would otherwise leave. Run `./nix.sh run .#lint` to lint your change.
 
 All Crossplane features must be covered by unit **and** end-to-end (E2E) tests.
 
@@ -223,6 +254,15 @@ Thank you for reading through our contributing guide! We appreciate you taking
 the time to ensure your contributions are high quality and easy for our
 community to review and accept. Please don't hesitate to [reach out to
 us][Slack] if you have any questions about contributing!
+
+## Using AI Tools
+
+We support contributors using AI tools to assist their contributions to the
+project. However, we highly value genuine engagement with other humans and we
+want collaboration with contributors to feel that way.
+
+Please review our [AI policy] before contributing to the Crossplane project and
+ensure that you adhere to all of its guidelines.
 
 ## Certificate of Origin
 
@@ -489,7 +529,7 @@ func WithFowlWrangler(fw fowl.Wrangler) Option {
 func NewWrangler(looseGeese int, o ...Option) *Wrangler {
         w := &Wrangler{
                 fw: fowl.DefaultWrangler{}
-                loose: 
+                loose:
         }
 
         for _, fn := range o {
@@ -504,7 +544,7 @@ func example() {
                 WithFowlWrangler(chicken.NewWrangler()),
                 WithSomeOtherOption(),
                 WithYetAnotherOption())
-        
+
         w.Wrangle()
 }
 ```
@@ -767,7 +807,7 @@ func example() error {
         } else {
                 store(embiggen(v))
         }
-        
+
         return nil
 }
 ```
@@ -799,15 +839,15 @@ Conditions have a `type`, a `reason` and a `message`:
 - The type is fixed by type, e.g. `Ready` or `Synced`. Keep the number low.
   Uniform condition types across related kinds are preferred.
 
-  `Ready` is common in Crossplane to indicate that a resource is ready to be 
+  `Ready` is common in Crossplane to indicate that a resource is ready to be
   used by the user. Do not signal `Ready=True` earlier, e.g. do not signal
   a claim as ready before the credential secret has been created and has
   valid and working credentials.
-  
-- The reason is for machines and uses CamelCase. Reasons should be documented in 
+
+- The reason is for machines and uses CamelCase. Reasons should be documented in
   the API docs.
 - The message is for humans and is written in plain English, without newlines,
-  and with the first letter capitalized and no trailing punctuation. It might 
+  and with the first letter capitalized and no trailing punctuation. It might
   end in an error string, e.g. `Cannot create all resources: foo, bar, and 3 more failed: condiguration.pkg.crossplane.io "foo" is invalid: package.spec is required`.
   Keep the message reasonable short although there is no hard limit. 1000
   characters is probably too long, 100 characters is fine.
@@ -834,7 +874,7 @@ not emit an event. For example, if no new composition is selected, do not emit a
 event. Successful idem-potent actions should only emit an event once. Erroring
 actions should emit an event for each error.
 
-Events should aim at telling what has changed and to which value, e.g. 
+Events should aim at telling what has changed and to which value, e.g.
 `Successfully selected composition: eks.clusters.caas.com`, don't omit the
 composition name here.
 
@@ -863,7 +903,7 @@ Examples for good events:
 
 Examples for bad events:
 - `Applied RBAC ClusterRoles` – it's lacking which ClusterRoles.
-- `Bound system ClusterRole to provider ServiceAccount(s)` – it's lacking which 
+- `Bound system ClusterRole to provider ServiceAccount(s)` – it's lacking which
   ClusterRole, which service accounts and what this cluster role enables.
 - `(Re)started composite resource controller` – controllers are not user-facing,
   but just an implementation detail of how APIs are implemented.
@@ -915,7 +955,7 @@ func TestExample(t *testing.T) {
                         }
                 },
         }
-        
+
         for name, tc := range cases {
                 t.Run(name, func(t *testing.T) {
                         got, err := Example(tc.args.ctx, tc.args.input)
@@ -938,9 +978,11 @@ func TestExample(t *testing.T) {
 
 [Slack]: https://slack.crossplane.io/
 [code of conduct]: https://github.com/cncf/foundation/blob/main/code-of-conduct.md
-[Earthly]: https://docs.earthly.dev
+[AI policy]: ../AI_POLICY.md
+[Nix]: ../design/one-pager-build-with-nix.md
+[install-nix]: https://nixos.org/download/
+[enable-flakes]: https://wiki.nixos.org/wiki/Flakes#Nix_standalone
 [get-docker]: https://docs.docker.com/get-docker
-[get-earthly]: https://earthly.dev/get-earthly
 [Go]: https://go.dev
 [build submodule]: https://github.com/crossplane/build/
 [`kind`]: https://kind.sigs.k8s.io/

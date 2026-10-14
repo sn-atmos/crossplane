@@ -29,8 +29,8 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	legacy "github.com/crossplane/crossplane/v2/apis/apiextensions/v1beta1"
-	"github.com/crossplane/crossplane/v2/apis/protection/v1beta1"
+	legacy "github.com/crossplane/crossplane/apis/v2/apiextensions/v1beta1"
+	"github.com/crossplane/crossplane/apis/v2/protection/v1beta1"
 	"github.com/crossplane/crossplane/v2/internal/protection"
 )
 
@@ -53,7 +53,12 @@ func indexVal(apiVersion, kind, name, namespace string) string {
 	// ignore the error is that the IndexerFunc using this value to index the
 	// objects does not return an error, so we cannot bubble up the error here.
 	gr, _ := schema.ParseGroupVersion(apiVersion)
-	return fmt.Sprintf("%s.%s.%s.%s", gr.Group, kind, name, namespace)
+	// Join with '/' rather than '.'. API groups and resource names may both
+	// contain '.', so a '.'-joined key is ambiguous and distinct resources can
+	// collapse to the same value (e.g. group "example.org"/name "bar" and group
+	// "example"/name "Foo.bar"). '/' cannot appear in a group, kind, name, or
+	// namespace, so it keeps each resource's key unique.
+	return fmt.Sprintf("%s/%s/%s/%s", gr.Group, kind, name, namespace)
 }
 
 // A Finder finds all usages of a resource. It supports all known types of usage
@@ -120,7 +125,7 @@ func (f *Finder) FindUsageOf(ctx context.Context, o Object) ([]protection.Usage,
 	}
 
 	for _, u := range ul.Items {
-		usages = append(usages, &u)
+		usages = append(usages, &protection.InternalUsage{Usage: u})
 	}
 
 	cul := &v1beta1.ClusterUsageList{}
@@ -129,7 +134,7 @@ func (f *Finder) FindUsageOf(ctx context.Context, o Object) ([]protection.Usage,
 	}
 
 	for _, u := range cul.Items {
-		usages = append(usages, &u)
+		usages = append(usages, &protection.InternalClusterUsage{ClusterUsage: u})
 	}
 
 	lul := &legacy.UsageList{} //nolint:staticcheck // It's deprecated but we still need to support it.
@@ -138,7 +143,7 @@ func (f *Finder) FindUsageOf(ctx context.Context, o Object) ([]protection.Usage,
 	}
 
 	for _, u := range lul.Items {
-		usages = append(usages, &u)
+		usages = append(usages, &protection.InternalLegacyUsage{Usage: u})
 	}
 
 	return usages, nil

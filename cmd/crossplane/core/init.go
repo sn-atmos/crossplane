@@ -29,7 +29,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
 	"github.com/crossplane/crossplane/v2/internal/initializer"
 )
 
@@ -47,13 +47,15 @@ type initCommand struct {
 
 	EnableWebhooks bool `aliases:"webhook-enabled" default:"true" env:"ENABLE_WEBHOOKS,WEBHOOK_ENABLED" help:"Enable webhook configuration."`
 
-	WebhookServiceName      string `env:"WEBHOOK_SERVICE_NAME"       help:"The name of the Service object that the webhook service will be run."`
-	WebhookServiceNamespace string `env:"WEBHOOK_SERVICE_NAMESPACE"  help:"The namespace of the Service object that the webhook service will be run."`
-	WebhookServicePort      int32  `env:"WEBHOOK_SERVICE_PORT"       help:"The port of the Service that the webhook service will be run."`
-	ESSTLSServerSecretName  string `env:"ESS_TLS_SERVER_SECRET_NAME" help:"The name of the Secret that the initializer will fill with ESS TLS server certificate."`
-	TLSCASecretName         string `env:"TLS_CA_SECRET_NAME"         help:"The name of the Secret that the initializer will fill with TLS CA certificate."`
-	TLSServerSecretName     string `env:"TLS_SERVER_SECRET_NAME"     help:"The name of the Secret that the initializer will fill with TLS server certificates."`
-	TLSClientSecretName     string `env:"TLS_CLIENT_SECRET_NAME"     help:"The name of the Secret that the initializer will fill with TLS client certificates."`
+	EnableUsages              bool   `default:"true" env:"ENABLE_USAGES" group:"Beta Features:"             help:"Enable support for deletion ordering and resource protection with Usages. When disabled, the Usage deletion protection webhook configuration is not installed and any existing one is removed."`
+	UsageWebhookFailurePolicy string `default:"Fail" enum:"Fail,Ignore"  env:"USAGE_WEBHOOK_FAILURE_POLICY" help:"The failurePolicy of the Usage deletion protection webhook. Set to Ignore for compatibility with managed Kubernetes operations that reject Fail-policy webhooks with wildcard rules."`
+
+	WebhookServiceName      string `env:"WEBHOOK_SERVICE_NAME"      help:"The name of the Service object that the webhook service will be run."`
+	WebhookServiceNamespace string `env:"WEBHOOK_SERVICE_NAMESPACE" help:"The namespace of the Service object that the webhook service will be run."`
+	WebhookServicePort      int32  `env:"WEBHOOK_SERVICE_PORT"      help:"The port of the Service that the webhook service will be run."`
+	TLSCASecretName         string `env:"TLS_CA_SECRET_NAME"        help:"The name of the Secret that the initializer will fill with TLS CA certificate."`
+	TLSServerSecretName     string `env:"TLS_SERVER_SECRET_NAME"    help:"The name of the Secret that the initializer will fill with TLS server certificates."`
+	TLSClientSecretName     string `env:"TLS_CLIENT_SECRET_NAME"    help:"The name of the Secret that the initializer will fill with TLS client certificates."`
 }
 
 // Run starts the initialization process.
@@ -92,6 +94,24 @@ func (c *initCommand) Run(s *runtime.Scheme, log logging.Logger) error {
 			),
 		)
 
+		const (
+			usageWebhookConfigName = "crossplane-no-usages"
+			usageWebhookName       = "nousages.protection.crossplane.io"
+		)
+
+		var whOpts []initializer.WebhookConfigurationsOption
+		if c.EnableUsages {
+			whOpts = append(whOpts,
+				initializer.WithFailurePolicyOverride(usageWebhookConfigName, admv1.FailurePolicyType(c.UsageWebhookFailurePolicy)))
+		} else {
+			// Usages are disabled: don't install the Usage deletion protection
+			// webhook, and remove one left over from a previous install.
+			whOpts = append(whOpts,
+				initializer.WithSkippedConfigurations(usageWebhookConfigName))
+			steps = append(steps,
+				initializer.NewValidatingWebhookRemover(usageWebhookConfigName, usageWebhookName))
+		}
+
 		nn := types.NamespacedName{
 			Name:      c.TLSServerSecretName,
 			Namespace: c.Namespace,
@@ -103,7 +123,7 @@ func (c *initCommand) Run(s *runtime.Scheme, log logging.Logger) error {
 		}
 		steps = append(steps,
 			initializer.NewCoreCRDs(c.CRDsPath, s, initializer.WithWebhookTLSSecretRef(nn)),
-			initializer.NewWebhookConfigurations(c.WebhookConfigurationsPath, s, nn, svc))
+			initializer.NewWebhookConfigurations(c.WebhookConfigurationsPath, s, nn, svc, whOpts...))
 	} else {
 		log.Info("Warning: Webhooks are disabled, so deprecated ValidatingWebhookConfigurations will not be automatically deleted.")
 		steps = append(steps,
@@ -117,16 +137,7 @@ func (c *initCommand) Run(s *runtime.Scheme, log logging.Logger) error {
 		initializer.NewCoreCRDsMigrator("usages.apiextensions.crossplane.io", "v1beta1"),
 		initializer.NewCoreCRDsMigrator("functions.pkg.crossplane.io", "v1beta1"),
 		initializer.NewCoreCRDsMigrator("functionrevisions.pkg.crossplane.io", "v1beta1"),
-	)
-
-	if c.ESSTLSServerSecretName != "" {
-		steps = append(steps, initializer.NewTLSCertificateGenerator(c.Namespace, c.TLSCASecretName,
-			initializer.TLSCertificateGeneratorWithServerSecretName(c.ESSTLSServerSecretName, []string{fmt.Sprintf("*.%s", c.Namespace)}),
-			initializer.TLSCertificateGeneratorWithLogger(log.WithValues("Step", "ESSCertificateGenerator")),
-		))
-	}
-
-	steps = append(steps, initializer.NewLockObject(),
+		initializer.NewLockObject(),
 		initializer.NewPackageInstaller(c.Providers, c.Configurations, c.Functions),
 		initializer.StepFunc(initializer.DefaultDeploymentRuntimeConfig),
 		initializer.DefaultManagedResourceActivationPolicy(c.Activations...),

@@ -6,7 +6,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 
-	commonv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 func TestPackageHealth(t *testing.T) {
@@ -15,7 +15,7 @@ func TestPackageHealth(t *testing.T) {
 	}
 
 	type want struct {
-		condition commonv1.Condition
+		condition xpv2.Condition
 	}
 
 	cases := map[string]struct {
@@ -29,8 +29,8 @@ func TestPackageHealth(t *testing.T) {
 				pr: &ProviderRevision{
 					Status: ProviderRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionTrue,
@@ -58,8 +58,8 @@ func TestPackageHealth(t *testing.T) {
 			args: args{
 				pr: &ConfigurationRevision{
 					Status: PackageRevisionStatus{
-						ConditionedStatus: commonv1.ConditionedStatus{
-							Conditions: []commonv1.Condition{
+						ConditionedStatus: xpv2.ConditionedStatus{
+							Conditions: []xpv2.Condition{
 								{
 									Type:    TypeRevisionHealthy,
 									Status:  corev1.ConditionTrue,
@@ -75,14 +75,49 @@ func TestPackageHealth(t *testing.T) {
 				condition: Healthy(),
 			},
 		},
+		"HealthyRuntimeAwaitingActivation": {
+			reason: "Should return a healthy awaiting activation condition when the runtime is intentionally scaled to zero",
+			args: args{
+				pr: &ProviderRevision{
+					Status: ProviderRevisionStatus{
+						PackageRevisionStatus: PackageRevisionStatus{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
+									{
+										Type:    TypeRevisionHealthy,
+										Status:  corev1.ConditionTrue,
+										Reason:  ReasonHealthy,
+										Message: "Package revision is healthy",
+									},
+									{
+										Type:   TypeRuntimeHealthy,
+										Status: corev1.ConditionTrue,
+										Reason: ReasonHealthy,
+									},
+									{
+										Type:    TypeRuntimeActive,
+										Status:  corev1.ConditionFalse,
+										Reason:  ReasonAwaitingActivation,
+										Message: "Package runtime is scaled to zero; awaiting the first ManagedResourceDefinition to be activated",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				condition: HealthyAwaitingActivation().WithMessage("Package runtime is scaled to zero; awaiting the first ManagedResourceDefinition to be activated"),
+			},
+		},
 		"UnhealthyRevision": {
 			reason: "Should return unhealthy condition when revision is unhealthy",
 			args: args{
 				pr: &ProviderRevision{
 					Status: ProviderRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionFalse,
@@ -111,8 +146,8 @@ func TestPackageHealth(t *testing.T) {
 				pr: &ProviderRevision{
 					Status: ProviderRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionTrue,
@@ -125,6 +160,11 @@ func TestPackageHealth(t *testing.T) {
 										Reason:  ReasonUnhealthy,
 										Message: "Runtime deployment is not ready",
 									},
+									{
+										Type:   TypeRuntimeActive,
+										Status: corev1.ConditionTrue,
+										Reason: ReasonActiveRuntime,
+									},
 								},
 							},
 						},
@@ -135,14 +175,50 @@ func TestPackageHealth(t *testing.T) {
 				condition: Unhealthy().WithMessage("Package runtime health is \"False\" with message: Runtime deployment is not ready"),
 			},
 		},
+		"UnhealthyRuntimeAwaitingActivation": {
+			reason: "Should include awaiting activation context when runtime is unhealthy and scaled to zero",
+			args: args{
+				pr: &ProviderRevision{
+					Status: ProviderRevisionStatus{
+						PackageRevisionStatus: PackageRevisionStatus{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
+									{
+										Type:    TypeRevisionHealthy,
+										Status:  corev1.ConditionTrue,
+										Reason:  ReasonHealthy,
+										Message: "Package revision is healthy",
+									},
+									{
+										Type:    TypeRuntimeHealthy,
+										Status:  corev1.ConditionFalse,
+										Reason:  ReasonUnhealthy,
+										Message: "Runtime deployment is not ready",
+									},
+									{
+										Type:    TypeRuntimeActive,
+										Status:  corev1.ConditionFalse,
+										Reason:  ReasonAwaitingActivation,
+										Message: "Package runtime is scaled to zero; awaiting the first ManagedResourceDefinition to be activated",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: want{
+				condition: Unhealthy().WithMessage("Package runtime health is \"False\" with message: Runtime deployment is not ready; runtime is scaled to zero awaiting activation"),
+			},
+		},
 		"BothUnhealthy": {
 			reason: "Should return unhealthy condition with revision message when both are unhealthy (revision checked first)",
 			args: args{
 				pr: &FunctionRevision{
 					Status: FunctionRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionFalse,
@@ -171,8 +247,8 @@ func TestPackageHealth(t *testing.T) {
 				pr: &ProviderRevision{
 					Status: ProviderRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:   TypeRevisionHealthy,
 										Status: corev1.ConditionUnknown,
@@ -200,8 +276,8 @@ func TestPackageHealth(t *testing.T) {
 				pr: &ProviderRevision{
 					Status: ProviderRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionTrue,
@@ -228,8 +304,8 @@ func TestPackageHealth(t *testing.T) {
 			args: args{
 				pr: &ConfigurationRevision{
 					Status: PackageRevisionStatus{
-						ConditionedStatus: commonv1.ConditionedStatus{
-							Conditions: []commonv1.Condition{},
+						ConditionedStatus: xpv2.ConditionedStatus{
+							Conditions: []xpv2.Condition{},
 						},
 					},
 				},
@@ -244,8 +320,8 @@ func TestPackageHealth(t *testing.T) {
 				pr: &FunctionRevision{
 					Status: FunctionRevisionStatus{
 						PackageRevisionStatus: PackageRevisionStatus{
-							ConditionedStatus: commonv1.ConditionedStatus{
-								Conditions: []commonv1.Condition{
+							ConditionedStatus: xpv2.ConditionedStatus{
+								Conditions: []xpv2.Condition{
 									{
 										Type:    TypeRevisionHealthy,
 										Status:  corev1.ConditionTrue,

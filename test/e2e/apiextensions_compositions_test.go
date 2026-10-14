@@ -32,11 +32,11 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"sigs.k8s.io/e2e-framework/third_party/helm"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 
-	apiextensionsv1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
-	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/v2/test/e2e/config"
 	"github.com/crossplane/crossplane/v2/test/e2e/funcs"
 )
@@ -79,7 +79,7 @@ func TestCompositionRevisionSelection(t *testing.T) {
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "claim.yaml"),
 			)).
 			Assess("ClaimIsReady",
-				funcs.ResourcesHaveConditionWithin(30*time.Second, manifests, "claim.yaml", xpv1.Available()),
+				funcs.ResourcesHaveConditionWithin(30*time.Second, manifests, "claim.yaml", xpv2.Available()),
 			).
 			Assess("ClaimHasOriginalField",
 				funcs.ResourcesHaveFieldValueWithin(10*time.Second, manifests, "claim.yaml", "status.coolerField", "from-original-composition"),
@@ -119,7 +119,7 @@ func TestBasicCompositionNamespaced(t *testing.T) {
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			Assess("XRIsReady",
-				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv1.Available(), xpv1.ReconcileSuccess())).
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv2.Available(), xpv2.ReconcileSuccess())).
 			Assess("XRHasStatusField",
 				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.coolerField", "I'M COOLER!"),
 			).
@@ -153,7 +153,7 @@ func TestLackOfRightsNamespaced(t *testing.T) {
 			)).
 			Assess("XRHasStatusField", funcs.AllOf(
 				// A blank error is as good as we can do at the moment. This validates we get into a reconciliation error, which is better than nothing.
-				funcs.ResourcesHaveConditionWithin(5*time.Minute, manifests, "xr.yaml", xpv1.ReconcileError(errors.New(""))),
+				funcs.ResourcesHaveConditionWithin(5*time.Minute, manifests, "xr.yaml", xpv2.ReconcileError(errors.New(""))),
 			)).
 			WithTeardown("DeleteXR", funcs.AllOf(
 				funcs.DeleteResources(manifests, "xr.yaml"),
@@ -184,7 +184,7 @@ func TestBasicCompositionCluster(t *testing.T) {
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			Assess("XRIsReady",
-				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv1.Available(), xpv1.ReconcileSuccess()),
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv2.Available(), xpv2.ReconcileSuccess()),
 			).
 			Assess("ComposedResourceHasGenerateName",
 				funcs.ComposedResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "metadata.generateName", "basic-xr-cluster-", func(object k8s.Object) bool {
@@ -223,7 +223,7 @@ func TestCompositionSelection(t *testing.T) {
 			Assess("CreateClaim", funcs.AllOf(
 				funcs.ApplyClaim(FieldManager, manifests, "claim.yaml"),
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "claim.yaml"),
-				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "claim.yaml", xpv1.Available()),
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "claim.yaml", xpv2.Available()),
 			)).
 			Assess("LabelSelectorPropagatesToXR", funcs.AllOf(
 				// The label selector should be propagated claim -> XR.
@@ -326,7 +326,7 @@ func TestNamespacedXRClusterComposition(t *testing.T) {
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			Assess("XRHasReconcileError",
-				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv1.ReconcileError(errors.New(""))),
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv2.ReconcileError(errors.New(""))),
 			).
 			WithTeardown("DeleteXR", funcs.AllOf(
 				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),
@@ -358,7 +358,7 @@ func TestCircuitBreaker(t *testing.T) {
 				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			Assess("XRBecomesReady",
-				funcs.ResourcesHaveConditionWithin(30*time.Second, manifests, "xr.yaml", xpv1.Available()),
+				funcs.ResourcesHaveConditionWithin(30*time.Second, manifests, "xr.yaml", xpv2.Available()),
 			).
 			Assess("WaitForNormalOperation", funcs.SleepFor(45*time.Second)).
 			// Verify the circuit stays closed under normal operation
@@ -381,6 +381,7 @@ func TestCircuitBreaker(t *testing.T) {
 					cm.SetName("circuit-breaker-configmap")
 					fieldpath.Pave(cm.Object).SetString("data.counter", fmt.Sprintf("%d", i))
 
+					//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 					if err := cfg.Client().Resources().GetControllerRuntimeClient().Patch(ctx, cm, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 						t.Logf("SSA update %d failed: %v", i, err)
 					}
@@ -394,12 +395,106 @@ func TestCircuitBreaker(t *testing.T) {
 			}).
 			Assess("CircuitBreakerOpens",
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "xr.yaml",
-					xpv1.Condition{
+					xpv2.Condition{
 						Type:   apiextensionsv1.TypeResponsive,
 						Status: corev1.ConditionFalse,
 						Reason: apiextensionsv1.ReasonWatchCircuitOpen,
 						// Note: Message is intentionally omitted as E2E framework ignores messages during comparison
 					}),
+			).
+			WithTeardown("DeleteXR", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "xr.yaml"),
+			)).
+			WithTeardown("DeletePrerequisites", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "setup/*.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(3*time.Minute, manifests, "setup/*.yaml"),
+			)).
+			Feature(),
+	)
+}
+
+func TestRequiredSchemas(t *testing.T) {
+	manifests := "test/e2e/manifests/apiextensions/composition/required-schemas"
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that functions can request and receive OpenAPI schemas for resource kinds via the required schemas mechanism, with referenced schemas like ObjectMeta flattened inline.").
+			WithLabel(LabelArea, LabelAreaAPIExtensions).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
+			WithSetup("CreatePrerequisites", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "setup/*.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "setup/*.yaml"),
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "setup/definition.yaml", apiextensionsv1.WatchingComposite()),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "setup/functions.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("CreateXR", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "xr.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
+			)).
+			Assess("XRIsReady",
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv2.Available(), xpv2.ReconcileSuccess()),
+			).
+			Assess("SchemaWasReceived",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.schemaReceived", true),
+			).
+			Assess("SchemaHasExpectedProperties",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.schemaHasProperties", true),
+			).
+			Assess("SchemaHasFlattenedRefs",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.schemaHasFlattenedRefs", true),
+			).
+			WithTeardown("DeleteXR", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "xr.yaml"),
+			)).
+			WithTeardown("DeletePrerequisites", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "setup/*.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(3*time.Minute, manifests, "setup/*.yaml"),
+			)).
+			Feature(),
+	)
+}
+
+func TestRequiredResources(t *testing.T) {
+	manifests := "test/e2e/manifests/apiextensions/composition/required-resources"
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that functions can request and receive existing cluster resources via the required resources mechanism.").
+			WithLabel(LabelArea, LabelAreaAPIExtensions).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
+			WithSetup("CreatePrerequisites", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "setup/*.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "setup/*.yaml"),
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "setup/definition.yaml", apiextensionsv1.WatchingComposite()),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "setup/functions.yaml", pkgv1.Healthy(), pkgv1.Active()),
+			)).
+			Assess("CreateXR", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "xr.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
+			)).
+			Assess("XRIsReady",
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv2.Available(), xpv2.ReconcileSuccess()),
+			).
+			Assess("ResourceWasReceived",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.resourceReceived", true),
+			).
+			Assess("ResourceHasExpectedData",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.resourceHasExpectedData", true),
+			).
+			Assess("XRReflectsInitialValue",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.receivedValue", "test-value"),
+			).
+			// Changing the required ConfigMap must reconcile the XR, so its
+			// status reflects the new value. The XR doesn't compose the
+			// ConfigMap, so no composed resource watch observes it. function-python
+			// applies a default 60s response TTL, but we assert the change within
+			// 30s - before that requeue could fire - so the reconcile is
+			// attributable to the required resource watch, not to polling.
+			Assess("UpdateRequiredResource",
+				funcs.ApplyResources(FieldManager, manifests, "configmap-update.yaml"),
+			).
+			Assess("XRReactsToRequiredResourceChange",
+				funcs.ResourcesHaveFieldValueWithin(30*time.Second, manifests, "xr.yaml", "status.receivedValue", "updated-value"),
 			).
 			WithTeardown("DeleteXR", funcs.AllOf(
 				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),

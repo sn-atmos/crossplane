@@ -27,7 +27,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	kunstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
@@ -89,6 +88,81 @@ func TestExistingRequiredResourcesFetcherFetch(t *testing.T) {
 				},
 			},
 		},
+		"SuccessMatchAll": {
+			reason: "We should return all resources of the requested apiVersion and kind when no match is specified",
+			args: args{
+				rs: &fnv1.ResourceSelector{
+					ApiVersion: "test.crossplane.io/v1",
+					Kind:       "Foo",
+					Namespace:  new("default"),
+				},
+				c: &test.MockClient{
+					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
+						obj.(*kunstructured.UnstructuredList).Items = []kunstructured.Unstructured{
+							{
+								Object: map[string]any{
+									"apiVersion": "test.crossplane.io/v1",
+									"kind":       "Foo",
+									"metadata": map[string]any{
+										"name": "cool-resource",
+									},
+								},
+							},
+							{
+								Object: map[string]any{
+									"apiVersion": "test.crossplane.io/v1",
+									"kind":       "Foo",
+									"metadata": map[string]any{
+										"name": "cooler-resource",
+									},
+								},
+							},
+						}
+						return nil
+					}),
+				},
+			},
+			want: want{
+				res: &fnv1.Resources{
+					Items: []*fnv1.Resource{
+						{
+							Resource: MustStruct(map[string]any{
+								"apiVersion": "test.crossplane.io/v1",
+								"kind":       "Foo",
+								"metadata": map[string]any{
+									"name": "cool-resource",
+								},
+							}),
+						},
+						{
+							Resource: MustStruct(map[string]any{
+								"apiVersion": "test.crossplane.io/v1",
+								"kind":       "Foo",
+								"metadata": map[string]any{
+									"name": "cooler-resource",
+								},
+							}),
+						},
+					},
+				},
+			},
+		},
+		"ErrorMatchAll": {
+			reason: "We should return any error encountered when listing all resources",
+			args: args{
+				rs: &fnv1.ResourceSelector{
+					ApiVersion: "test.crossplane.io/v1",
+					Kind:       "Foo",
+				},
+				c: &test.MockClient{
+					MockList: test.NewMockListFn(errBoom),
+				},
+			},
+			want: want{
+				res: nil,
+				err: errBoom,
+			},
+		},
 		"SuccessMatchLabels": {
 			reason: "We should return a valid Resources when a resource is found by labels",
 			args: args{
@@ -102,7 +176,7 @@ func TestExistingRequiredResourcesFetcherFetch(t *testing.T) {
 							},
 						},
 					},
-					Namespace: ptr.To("default"),
+					Namespace: new("default"),
 				},
 				c: &test.MockClient{
 					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
@@ -180,7 +254,7 @@ func TestExistingRequiredResourcesFetcherFetch(t *testing.T) {
 							},
 						},
 					},
-					Namespace: ptr.To("default"),
+					Namespace: new("default"),
 				},
 				c: &test.MockClient{
 					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
@@ -336,9 +410,13 @@ func TestFetchingFunctionRunner(t *testing.T) {
 	// Used in the Success test
 	called := false
 
+	// Used in the SeededRequirementResolvesInOneCall test.
+	seededCalls := 0
+
 	type params struct {
 		wrapped   FunctionRunner
 		resources RequiredResourcesFetcher
+		schemas   RequiredSchemasFetcher
 	}
 
 	type args struct {
@@ -364,6 +442,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 				wrapped: FunctionRunnerFn(func(_ context.Context, _ string, _ *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
 					return nil, errors.New("boom")
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -385,6 +464,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 					}
 					return rsp, nil
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -413,6 +493,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 					}
 					return rsp, nil
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -447,6 +528,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 				resources: RequiredResourcesFetcherFn(func(_ context.Context, _ *fnv1.ResourceSelector) (*fnv1.Resources, error) {
 					return nil, errors.New("boom")
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -476,6 +558,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 				resources: RequiredResourcesFetcherFn(func(_ context.Context, _ *fnv1.ResourceSelector) (*fnv1.Resources, error) {
 					return &fnv1.Resources{}, nil
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -525,6 +608,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 					}
 					return r, nil
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{},
@@ -536,6 +620,52 @@ func TestFetchingFunctionRunner(t *testing.T) {
 							"gimme": {
 								ApiVersion: "test.crossplane.io/v1",
 								Kind:       "CoolResource",
+							},
+						},
+					},
+				},
+			},
+		},
+		"SeededRequirementResolvesInOneCall": {
+			reason: "If the request is already seeded with the resources a function requires, we should call it only once.",
+			params: params{
+				wrapped: FunctionRunnerFn(func(_ context.Context, _ string, _ *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
+					seededCalls++
+					if seededCalls > 1 {
+						t.Errorf("function called %d times; want 1 - a seeded request should satisfy its requirements in a single call", seededCalls)
+					}
+					return &fnv1.RunFunctionResponse{
+						Requirements: &fnv1.Requirements{
+							Resources: map[string]*fnv1.ResourceSelector{
+								"gimme": {
+									ApiVersion: "test.crossplane.io/v1",
+									Kind:       "CoolResource",
+									Match:      &fnv1.ResourceSelector_MatchName{MatchName: "pretty-cool"},
+								},
+							},
+						},
+					}, nil
+				}),
+				resources: RequiredResourcesFetcherFn(func(_ context.Context, _ *fnv1.ResourceSelector) (*fnv1.Resources, error) {
+					return &fnv1.Resources{Items: []*fnv1.Resource{{Resource: coolResource}}}, nil
+				}),
+				schemas: NopRequiredSchemasFetcher{},
+			},
+			args: args{
+				req: &fnv1.RunFunctionRequest{
+					RequiredResources: map[string]*fnv1.Resources{
+						"gimme": {Items: []*fnv1.Resource{{Resource: coolResource}}},
+					},
+				},
+			},
+			want: want{
+				rsp: &fnv1.RunFunctionResponse{
+					Requirements: &fnv1.Requirements{
+						Resources: map[string]*fnv1.ResourceSelector{
+							"gimme": {
+								ApiVersion: "test.crossplane.io/v1",
+								Kind:       "CoolResource",
+								Match:      &fnv1.ResourceSelector_MatchName{MatchName: "pretty-cool"},
 							},
 						},
 					},
@@ -603,6 +733,7 @@ func TestFetchingFunctionRunner(t *testing.T) {
 						Items: []*fnv1.Resource{{Resource: coolResource}},
 					}, nil
 				}),
+				schemas: NopRequiredSchemasFetcher{},
 			},
 			args: args{
 				req: &fnv1.RunFunctionRequest{
@@ -630,11 +761,170 @@ func TestFetchingFunctionRunner(t *testing.T) {
 				},
 			},
 		},
+		"FetchSchemasError": {
+			reason: "We should return any error encountered when fetching schemas",
+			params: params{
+				wrapped: FunctionRunnerFn(func(_ context.Context, _ string, _ *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
+					rsp := &fnv1.RunFunctionResponse{
+						Requirements: &fnv1.Requirements{
+							Schemas: map[string]*fnv1.SchemaSelector{
+								"pod-schema": {
+									ApiVersion: "v1",
+									Kind:       "Pod",
+								},
+							},
+						},
+					}
+					return rsp, nil
+				}),
+				schemas: RequiredSchemasFetcherFn(func(_ context.Context, _ *fnv1.SchemaSelector) (*fnv1.Schema, error) {
+					return nil, errors.New("boom")
+				}),
+			},
+			args: args{
+				req: &fnv1.RunFunctionRequest{},
+			},
+			want: want{
+				err: cmpopts.AnyError,
+			},
+		},
+		"FetchSchemasSuccess": {
+			reason: "We should return the fetched schemas",
+			params: params{
+				wrapped: FunctionRunnerFn(func(_ context.Context, _ string, req *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
+					// On second call, verify schemas were populated
+					if len(req.GetRequiredSchemas()) > 0 {
+						if _, exists := req.GetRequiredSchemas()["pod-schema"]; !exists {
+							return nil, errors.New("expected pod-schema to be populated")
+						}
+					}
+					rsp := &fnv1.RunFunctionResponse{
+						Requirements: &fnv1.Requirements{
+							Schemas: map[string]*fnv1.SchemaSelector{
+								"pod-schema": {
+									ApiVersion: "v1",
+									Kind:       "Pod",
+								},
+							},
+						},
+					}
+					return rsp, nil
+				}),
+				schemas: RequiredSchemasFetcherFn(func(_ context.Context, ss *fnv1.SchemaSelector) (*fnv1.Schema, error) {
+					return &fnv1.Schema{
+						OpenapiV3: MustStruct(map[string]any{
+							"type": "object",
+							"x-kubernetes-group-version-kind": []any{
+								map[string]any{
+									"group":   "",
+									"version": ss.GetApiVersion(),
+									"kind":    ss.GetKind(),
+								},
+							},
+						}),
+					}, nil
+				}),
+			},
+			args: args{
+				req: &fnv1.RunFunctionRequest{},
+			},
+			want: want{
+				rsp: &fnv1.RunFunctionResponse{
+					Requirements: &fnv1.Requirements{
+						Schemas: map[string]*fnv1.SchemaSelector{
+							"pod-schema": {
+								ApiVersion: "v1",
+								Kind:       "Pod",
+							},
+						},
+					},
+				},
+			},
+		},
+		"PreserveBootstrapSchemasWithDynamicRequirements": {
+			reason: "We should preserve bootstrap schemas when functions set dynamic requirements",
+			params: params{
+				wrapped: FunctionRunnerFn(func(_ context.Context, _ string, req *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
+					// First call - check we have bootstrap schemas and set dynamic requirements
+					if len(req.GetRequiredSchemas()) == 1 {
+						if _, exists := req.GetRequiredSchemas()["bootstrap-schema"]; !exists {
+							return nil, errors.New("bootstrap schema missing on first call")
+						}
+
+						// Set dynamic requirements - this triggers the same path as resources
+						rsp := &fnv1.RunFunctionResponse{
+							Requirements: &fnv1.Requirements{
+								Schemas: map[string]*fnv1.SchemaSelector{
+									"dynamic-schema": {
+										ApiVersion: "apps/v1",
+										Kind:       "Deployment",
+									},
+								},
+							},
+						}
+						return rsp, nil
+					}
+
+					// Second call - verify we still have bootstrap AND dynamic schemas
+					if len(req.GetRequiredSchemas()) != 2 {
+						return nil, errors.Errorf("expected 2 required schemas, got %d", len(req.GetRequiredSchemas()))
+					}
+
+					if _, exists := req.GetRequiredSchemas()["bootstrap-schema"]; !exists {
+						return nil, errors.New("bootstrap schema lost after setting dynamic requirements")
+					}
+
+					if _, exists := req.GetRequiredSchemas()["dynamic-schema"]; !exists {
+						return nil, errors.New("dynamic schema not found")
+					}
+
+					// Requirements are stable now
+					return &fnv1.RunFunctionResponse{
+						Requirements: &fnv1.Requirements{
+							Schemas: map[string]*fnv1.SchemaSelector{
+								"dynamic-schema": {
+									ApiVersion: "apps/v1",
+									Kind:       "Deployment",
+								},
+							},
+						},
+					}, nil
+				}),
+				schemas: RequiredSchemasFetcherFn(func(_ context.Context, _ *fnv1.SchemaSelector) (*fnv1.Schema, error) {
+					// Return mock schema for dynamic requirements
+					return &fnv1.Schema{
+						OpenapiV3: MustStruct(map[string]any{"type": "object"}),
+					}, nil
+				}),
+			},
+			args: args{
+				req: &fnv1.RunFunctionRequest{
+					// Start with bootstrap schemas
+					RequiredSchemas: map[string]*fnv1.Schema{
+						"bootstrap-schema": {
+							OpenapiV3: MustStruct(map[string]any{"type": "object"}),
+						},
+					},
+				},
+			},
+			want: want{
+				rsp: &fnv1.RunFunctionResponse{
+					Requirements: &fnv1.Requirements{
+						Schemas: map[string]*fnv1.SchemaSelector{
+							"dynamic-schema": {
+								ApiVersion: "apps/v1",
+								Kind:       "Deployment",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewFetchingFunctionRunner(tc.params.wrapped, tc.params.resources)
+			r := NewFetchingFunctionRunner(tc.params.wrapped, tc.params.resources, tc.params.schemas)
 
 			rsp, err := r.RunFunction(tc.args.ctx, tc.args.name, tc.args.req)
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {

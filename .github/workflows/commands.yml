@@ -2,11 +2,17 @@ name: Comment Commands
 
 on: issue_comment
 
+permissions:
+  contents: read
+
 jobs:
   # NOTE(negz): See also backport.yml, which is the variant that triggers on PR
   # merge rather than on comment.
   backport:
-    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-26.04
     if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/backport')
     steps:
     - name: Extract Command
@@ -21,20 +27,22 @@ jobs:
         permission-level: write
 
     - name: Checkout
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         fetch-depth: 0
 
     - name: Open Backport PR
-      uses: zeebe-io/backport-action@ef20d86abccbac3ee3a73cb2efbdc06344c390e5 # v2.5.0
+      uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4.7.0
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         github_workspace: ${{ github.workspace }}
-        version: v0.0.4
 
   fresh:
-    runs-on: ubuntu-22.04
-    if: startsWith(github.event.comment.body, '/fresh')
+    permissions:
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-26.04
+    if: startsWith(github.event.comment.body, '/fresh') && github.event.comment.author_association != 'NONE'
 
     steps:
     - name: Extract Command

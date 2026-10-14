@@ -19,7 +19,7 @@ package v1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 // +kubebuilder:object:root=true
@@ -31,7 +31,7 @@ import (
 // Compositions.
 //
 // Read the Crossplane documentation for
-// [more information about Configuration packages](https://docs.crossplane.io/latest/concepts/packages).
+// [more information about Configuration packages]( https://docs.crossplane.io/latest/packages/configurations/).
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="INSTALLED",type="string",JSONPath=".status.conditions[?(@.type=='Installed')].status"
@@ -55,7 +55,7 @@ type ConfigurationSpec struct {
 
 // ConfigurationStatus represents the observed state of a Configuration.
 type ConfigurationStatus struct {
-	xpv1.ConditionedStatus `json:",inline"`
+	xpv2.ConditionedStatus `json:",inline"`
 	PackageStatus          `json:",inline"`
 }
 

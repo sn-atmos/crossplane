@@ -29,8 +29,8 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	legacy "github.com/crossplane/crossplane/v2/apis/apiextensions/v1beta1"
-	"github.com/crossplane/crossplane/v2/apis/protection/v1beta1"
+	legacy "github.com/crossplane/crossplane/apis/v2/apiextensions/v1beta1"
+	"github.com/crossplane/crossplane/apis/v2/protection/v1beta1"
 	"github.com/crossplane/crossplane/v2/internal/protection"
 )
 
@@ -155,9 +155,15 @@ func TestFindUsageOf(t *testing.T) {
 			},
 			want: want{
 				u: []protection.Usage{
-					&v1beta1.Usage{ObjectMeta: metav1.ObjectMeta{Name: "usage"}},
-					&v1beta1.ClusterUsage{ObjectMeta: metav1.ObjectMeta{Name: "cluster-usage"}},
-					&legacy.Usage{ObjectMeta: metav1.ObjectMeta{Name: "legacy-usage"}}, //nolint:staticcheck // Deprecated but still supported.
+					&protection.InternalUsage{
+						Usage: v1beta1.Usage{ObjectMeta: metav1.ObjectMeta{Name: "usage"}},
+					},
+					&protection.InternalClusterUsage{
+						ClusterUsage: v1beta1.ClusterUsage{ObjectMeta: metav1.ObjectMeta{Name: "cluster-usage"}},
+					},
+					&protection.InternalLegacyUsage{
+						Usage: legacy.Usage{ObjectMeta: metav1.ObjectMeta{Name: "legacy-usage"}}, //nolint:staticcheck // Deprecated but still supported.
+					},
 				},
 			},
 		},
@@ -177,6 +183,49 @@ func TestFindUsageOf(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("%s\nf.FindUsageOf(...): -want err, +got err:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestIndexVal(t *testing.T) {
+	type args struct {
+		apiVersion string
+		kind       string
+		name       string
+		namespace  string
+	}
+
+	type want struct {
+		key string
+	}
+
+	// The two cases below are distinct resources whose group and name place the
+	// '.' boundary differently. With a '.'-joined key they collapse to the same
+	// value, which makes the usage finder associate one resource with the
+	// other's Usages. The '/' separator keeps them distinct.
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"GroupContainsDot": {
+			reason: "A '.' in the API group should not bleed into the following key segments.",
+			args:   args{apiVersion: "example.org/v1", kind: "Foo", name: "bar", namespace: "x"},
+			want:   want{key: "example.org/Foo/bar/x"},
+		},
+		"NameContainsDot": {
+			reason: "A '.' in the name should not collide with a group that contains a '.'.",
+			args:   args{apiVersion: "example/v1", kind: "org", name: "Foo.bar", namespace: "x"},
+			want:   want{key: "example/org/Foo.bar/x"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := indexVal(tc.args.apiVersion, tc.args.kind, tc.args.name, tc.args.namespace)
+			if diff := cmp.Diff(tc.want.key, got); diff != "" {
+				t.Errorf("%s\nindexVal(...): -want key, +got key:\n%s", tc.reason, diff)
 			}
 		})
 	}

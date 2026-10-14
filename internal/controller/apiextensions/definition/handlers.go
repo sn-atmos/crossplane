@@ -26,11 +26,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/dependency"
 )
 
 // CompositionRevisionMapFunc returns a MapFunc that maps CompositionRevisions to affected XRs.
@@ -76,7 +77,7 @@ func CompositionRevisionMapFunc(of schema.GroupVersionKind, s composite.Schema, 
 
 			// We only care about XRs that would
 			// automatically update to this new revision.
-			if pol := xr.GetCompositionUpdatePolicy(); pol != nil && *pol == xpv1.UpdateManual {
+			if pol := xr.GetCompositionUpdatePolicy(); pol != nil && *pol == xpv2.UpdateManual {
 				continue
 			}
 
@@ -109,28 +110,15 @@ func SelfMapFunc() handler.MapFunc {
 	}
 }
 
-// CompositeResourcesMapFunc returns a MapFunc that maps composed resources to affected XRs.
-func CompositeResourcesMapFunc(of schema.GroupVersionKind, c client.Reader, log logging.Logger) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		cdGVK := obj.GetObjectKind().GroupVersionKind()
-		key := refKey(obj.GetNamespace(), obj.GetName(), cdGVK.Kind, cdGVK.GroupVersion().String())
+// DependantsMapFunc returns a MapFunc that maps a changed object to the XRs that
+// depend on it, according to the supplied tracker.
+func DependantsMapFunc(t dependency.Tracker) handler.MapFunc {
+	return func(_ context.Context, obj client.Object) []reconcile.Request {
+		keys := t.Dependants(obj)
 
-		composites := kunstructured.UnstructuredList{}
-		composites.SetGroupVersionKind(of.GroupVersion().WithKind(of.Kind + "List"))
-		if err := c.List(ctx, &composites, client.MatchingFields{compositeResourcesRefsIndex: key}); err != nil {
-			log.Debug("cannot list composite resources related to a composed resource change", "error", err, "gvk", of.String(), "fieldSelector", compositeResourcesRefsIndex+"="+key)
-			return nil
-		}
-
-		requests := make([]reconcile.Request, len(composites.Items))
-		for i, xr := range composites.Items {
-			log.Debug("Mapping composite resource because composed resource changed",
-				"namespace", xr.GetNamespace(),
-				"name", xr.GetName(),
-				"cdGVK", cdGVK.String(),
-				"cdName", obj.GetName(),
-			)
-			requests[i] = reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&xr)}
+		requests := make([]reconcile.Request, len(keys))
+		for i, k := range keys {
+			requests[i] = reconcile.Request{NamespacedName: k}
 		}
 
 		return requests

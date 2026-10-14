@@ -14,11 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package dag implements a Directed Acyclic Graph for Package dependencies.
 package dag
 
 import (
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )

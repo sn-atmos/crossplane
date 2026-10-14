@@ -95,6 +95,9 @@ linters:
     # against idiomatic Go programming, which encourages this approach - e.g.
     # to scope errors.
     - noinlineerr
+
+    # Deprecated in favour of gomodguard_v2, which is enabled by default: all
+    - gomodguard
   settings:
     depguard:
       rules:
@@ -117,6 +120,7 @@ linters:
     goconst:
       min-len: 3
       min-occurrences: 5
+      ignore-tests: true
     gocritic:
       enabled-tags:
         - performance
@@ -125,6 +129,9 @@ linters:
           paramsOnly: true
         rangeValCopy:
           sizeThreshold: 32
+    gomoddirectives:
+      # Allow replace for the local ./apis module.
+      replace-local: true
     govet:
       disable:
         - shadow
@@ -160,6 +167,7 @@ linters:
           - gochecknoinits
           - gocognit
           - gosec
+          - noctx
           - scopelint
           - unparam
           - embeddedstructfieldcheck
@@ -176,6 +184,14 @@ linters:
           - gochecknoglobals
           - gochecknoinits
         path: apis/
+
+      # The omitzero check warns that omitempty has no effect on struct fields
+      # in Go's encoding/json, which is true. However, kubebuilder uses
+      # omitempty to determine whether fields are optional in CRD schemas.
+      # Removing omitempty would incorrectly mark fields like status as required.
+      - linters:
+          - modernize
+        text: 'omitzero:'
 
       # These are performance optimisations rather than style issues per se.
       # They warn when function arguments or range values copy a lot of memory
@@ -220,11 +236,21 @@ linters:
           - staticcheck
         text: 'SA1019: .+ is deprecated: Use Composition Functions instead.'
 
-      # We include a 'common' package under crank, which revive doesn't like.
+      # Various fields related to package dependencies are deprecated in favor
+      # of specifying apiVersion and kind explicitly. External package authors
+      # should use the new format, but Crossplane must support the old format
+      # for backward compatibility.
       - linters:
-          - revive
-        path: 'cmd/crank/common/*'
-        text: 'var-naming: avoid meaningless package names'
+          - staticcheck
+        text: 'SA1019: .+ is deprecated: Specify an apiVersion'
+
+      # controller-runtime has marked the events API we use as deprecated, and
+      # it will be a big lift to move to the new API. We'll ignore the warnings
+      # about this globally until we have time to introduce the new API
+      # everywhere.
+      - linters:
+          - staticcheck
+        text: 'SA1019: .+ is deprecated: this uses the old events API and will be removed in a future release. Please use GetEventRecorder instead.'
 
     paths:
       - zz_generated\..+\.go$

@@ -23,8 +23,9 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
-	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
+	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 // A CapabilityChecker checks whether the named functions have all the required
@@ -90,4 +91,20 @@ func (c *RevisionCapabilityChecker) CheckCapabilities(ctx context.Context, caps 
 	}
 
 	return nil
+}
+
+// SupportedCapabilities returns all capabilities supported by Crossplane.
+func SupportedCapabilities() []fnv1.Capability {
+	return []fnv1.Capability{
+		fnv1.Capability_CAPABILITY_CAPABILITIES,
+		fnv1.Capability_CAPABILITY_REQUIRED_RESOURCES,
+		fnv1.Capability_CAPABILITY_CREDENTIALS,
+		fnv1.Capability_CAPABILITY_CONDITIONS,
+		fnv1.Capability_CAPABILITY_REQUIRED_SCHEMAS,
+	}
+}
+
+// RenderCapabilities returns all capabilities supported by crank render.
+func RenderCapabilities() []fnv1.Capability {
+	return SupportedCapabilities()
 }

@@ -17,6 +17,7 @@ limitations under the License.
 package runtime
 
 import (
+	"maps"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -122,6 +123,13 @@ func DeploymentWithOptionalReplicas(replicas int32) DeploymentOverride {
 	}
 }
 
+// DeploymentWithReplicas sets the replicas, overriding any existing value.
+func DeploymentWithReplicas(replicas int32) DeploymentOverride {
+	return func(d *appsv1.Deployment) {
+		d.Spec.Replicas = &replicas
+	}
+}
+
 // DeploymentWithSelectors overrides the selectors of a Deployment. It also
 // ensures that the pod template labels always contains the deployment selector.
 func DeploymentWithSelectors(selectors map[string]string) DeploymentOverride {
@@ -137,9 +145,7 @@ func DeploymentWithSelectors(selectors map[string]string) DeploymentOverride {
 			d.Spec.Template.Labels = map[string]string{}
 		}
 
-		for k, v := range selectors {
-			d.Spec.Template.Labels[k] = v
-		}
+		maps.Copy(d.Spec.Template.Labels, selectors)
 	}
 }
 

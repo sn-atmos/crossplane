@@ -20,14 +20,12 @@ package pkg
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	pkgv1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 	"github.com/crossplane/crossplane/v2/internal/controller/pkg/controller"
 	"github.com/crossplane/crossplane/v2/internal/controller/pkg/manager"
 	"github.com/crossplane/crossplane/v2/internal/controller/pkg/resolver"
 	"github.com/crossplane/crossplane/v2/internal/controller/pkg/revision"
 	"github.com/crossplane/crossplane/v2/internal/controller/pkg/runtime"
-	"github.com/crossplane/crossplane/v2/internal/controller/pkg/signature"
-	"github.com/crossplane/crossplane/v2/internal/features"
 )
 
 // Setup package controllers.
@@ -51,14 +49,6 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 	if o.PackageRuntime.For(pkgv1.FunctionKind) == controller.PackageRuntimeDeployment {
 		setupFuncs = append(setupFuncs, []func(c ctrl.Manager, options controller.Options) error{
 			runtime.SetupFunctionRevision,
-		}...)
-	}
-
-	if o.Features.Enabled(features.EnableAlphaSignatureVerification) {
-		setupFuncs = append(setupFuncs, []func(c ctrl.Manager, options controller.Options) error{
-			signature.SetupProviderRevision,
-			signature.SetupConfigurationRevision,
-			signature.SetupFunctionRevision,
 		}...)
 	}
 

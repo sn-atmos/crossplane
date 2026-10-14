@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	commonv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
@@ -39,25 +38,41 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg/fake"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
-	"github.com/crossplane/crossplane/v2/internal/xpkg/fake"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
 
-var _ Revisioner = &MockRevisioner{}
+func TestPackageRevisionID(t *testing.T) {
+	digest := "123456789012"
 
-type MockRevisioner struct {
-	MockRevision func() (string, error)
-}
-
-func NewMockRevisionFn(hash string, err error) func() (string, error) {
-	return func() (string, error) {
-		return hash, err
+	tests := []struct {
+		name       string
+		generation int64
+	}{
+		{name: "generation 1 package creation", generation: 1},
+		{name: "generation 2 spec update", generation: 2},
 	}
-}
 
-func (m *MockRevisioner) Revision(context.Context, v1.Package, ...string) (string, error) {
-	return m.MockRevision()
+	ids := map[int64]string{}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := packageRevisionID(digest, tc.generation)
+
+			if got == digest {
+				t.Fatalf("expected revision ID to differ from package digest")
+			}
+
+			ids[tc.generation] = got
+		})
+	}
+
+	if ids[1] == ids[2] {
+		t.Fatalf("expected different generations to produce different revision IDs")
+	}
 }
 
 func TestReconcile(t *testing.T) {
@@ -66,6 +81,8 @@ func TestReconcile(t *testing.T) {
 	pullAlways := corev1.PullAlways
 	trueVal := true
 	revHistory := int64(1)
+	digest := "1234567890123456789012345678901234567890123456789012345678901234"
+	revisionName := xpkg.FriendlyID("test", packageRevisionID(digest, 0))
 
 	type args struct {
 		req reconcile.Request
@@ -88,7 +105,7 @@ func TestReconcile(t *testing.T) {
 				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
 				rec: &Reconciler{
 					newPackage: func() v1.Package { return &v1.Configuration{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{MockGet: test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, ""))},
 					},
 					log:        testLog,
@@ -105,7 +122,7 @@ func TestReconcile(t *testing.T) {
 				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
 				rec: &Reconciler{
 					newPackage: func() v1.Package { return &v1.Configuration{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{MockGet: test.NewMockGetFn(errBoom)},
 					},
 					log:        testLog,
@@ -123,7 +140,7 @@ func TestReconcile(t *testing.T) {
 				rec: &Reconciler{
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet:  test.NewMockGetFn(nil),
 							MockList: test.NewMockListFn(errBoom),
@@ -138,20 +155,20 @@ func TestReconcile(t *testing.T) {
 				err: errors.Wrap(errBoom, errListRevisions),
 			},
 		},
-		"ErrRewritePath": {
-			reason: "We should return an error if rewriting the image path based on configs fails.",
+		"ErrFetchPackage": {
+			reason: "We should return an error if fetching the package fails.",
 			args: args{
 				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
 				rec: &Reconciler{
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet:  test.NewMockGetFn(nil),
 							MockList: test.NewMockListFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
 							MockStatusUpdate: test.NewMockSubResourceUpdateFn(nil, func(o client.Object) error {
 								want := &v1.Configuration{}
-								want.SetConditions(v1.Unpacking().WithMessage(errors.Wrap(errBoom, errRewriteImage).Error()))
+								want.SetConditions(v1.Unpacking().WithMessage(errors.Wrap(errBoom, errUnpack).Error()), v1.Unhealthy().WithMessage(errors.Wrap(errBoom, errUnpack).Error()))
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -165,100 +182,16 @@ func TestReconcile(t *testing.T) {
 					log:        testLog,
 					record:     event.NewNopRecorder(),
 					conditions: conditions.ObservedGenerationPropagationManager{},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("", errBoom),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(nil, errBoom),
 					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", errBoom),
-					},
-				},
-			},
-			want: want{
-				err: errors.Wrap(errBoom, errRewriteImage),
-			},
-		},
-		"ErrGetPullConfig": {
-			reason: "We should return an error if getting the pull secret from image configs.",
-			args: args{
-				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
-				rec: &Reconciler{
-					newPackage:             func() v1.Package { return &v1.Configuration{} },
-					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
-						Client: &test.MockClient{
-							MockGet:  test.NewMockGetFn(nil),
-							MockList: test.NewMockListFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
-							MockStatusUpdate: test.NewMockSubResourceUpdateFn(nil, func(o client.Object) error {
-								want := &v1.Configuration{}
-								want.SetConditions(v1.Unpacking().WithMessage(errors.Wrap(errBoom, errGetPullConfig).Error()))
-								if diff := cmp.Diff(want, o); diff != "" {
-									t.Errorf("-want, +got:\n%s", diff)
-								}
-								return nil
-							}),
-						},
-						Applicator: resource.ApplyFn(func(_ context.Context, _ client.Object, _ ...resource.ApplyOption) error {
-							return nil
-						}),
-					},
-					log:    testLog,
-					record: event.NewNopRecorder(),
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("", errBoom),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", errBoom),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
-					},
-					conditions: conditions.ObservedGenerationPropagationManager{},
-				},
-			},
-			want: want{
-				err: errors.Wrap(errBoom, errGetPullConfig),
-			},
-		},
-		"ErrFetchRevision": {
-			reason: "We should return an error if fetching the revision for a package fails.",
-			args: args{
-				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
-				rec: &Reconciler{
-					newPackage:             func() v1.Package { return &v1.Configuration{} },
-					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
-						Client: &test.MockClient{
-							MockGet:  test.NewMockGetFn(nil),
-							MockList: test.NewMockListFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
-							MockStatusUpdate: test.NewMockSubResourceUpdateFn(nil, func(o client.Object) error {
-								want := &v1.Configuration{}
-								want.SetConditions(v1.Unpacking().WithMessage(errors.Wrap(errBoom, errUnpack).Error()))
-								if diff := cmp.Diff(want, o); diff != "" {
-									t.Errorf("-want, +got:\n%s", diff)
-								}
-								return nil
-							}),
-						},
-						Applicator: resource.ApplyFn(func(_ context.Context, _ client.Object, _ ...resource.ApplyOption) error {
-							return nil
-						}),
-					},
-					log:    testLog,
-					record: event.NewNopRecorder(),
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("", errBoom),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
-					},
-					conditions: conditions.ObservedGenerationPropagationManager{},
 				},
 			},
 			want: want{
 				err: errors.Wrap(errBoom, errUnpack),
 			},
 		},
-		"SuccessfulRerwiteImage": {
+		"SuccessfulRewriteImage": {
 			reason: "We should record the rewritten image path if an image config is used.",
 			args: args{
 				req: reconcile.Request{NamespacedName: types.NamespacedName{Name: "test"}},
@@ -266,7 +199,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -280,11 +213,11 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetActivationPolicy(&v1.AutomaticActivation)
 								want.SetConditions(v1.Unhealthy().WithMessage("Package revision health is \"Unknown\""))
 								want.SetConditions(v1.Active())
-								want.SetResolvedSource("new/image/path")
+								want.SetResolvedSource("gcr.io/new/image/path:v1.0.0")
 								want.SetAppliedImageConfigRefs(v1.ImageConfigRef{
 									Name:   "imageConfigName",
 									Reason: v1.ImageConfigReasonRewrite,
@@ -299,12 +232,15 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("imageConfigName", "new/image/path", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "gcr.io/new/image/path",
+							AppliedImageConfigs: []xpkg.ImageConfig{
+								{Name: "imageConfigName", Reason: xpkg.ImageConfigReasonRewrite},
+							},
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -323,7 +259,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -337,10 +273,11 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetActivationPolicy(&v1.AutomaticActivation)
 								want.SetConditions(v1.Unhealthy().WithMessage("Package revision health is \"Unknown\""))
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -351,12 +288,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -375,7 +314,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -390,11 +329,12 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetActivationPolicy(&v1.AutomaticActivation)
 								want.SetPackagePullPolicy(&pullAlways)
 								want.SetConditions(v1.Unhealthy().WithMessage("Package revision health is \"Unknown\""))
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -405,12 +345,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -429,7 +371,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -444,9 +386,10 @@ func TestReconcile(t *testing.T) {
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
 								want.SetActivationPolicy(&v1.ManualActivation)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Unhealthy().WithMessage("Package revision health is \"Unknown\""))
 								want.SetConditions(v1.Inactive().WithMessage("Package is inactive"))
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -457,12 +400,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -481,7 +426,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -493,10 +438,12 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetConditions(v1.RevisionHealthy())
+								cr.SetDesiredState(v1.PackageRevisionActive)
+								cr.SetRevision(1)
 								c := v1.ConfigurationRevisionList{
 									Items: []v1.ConfigurationRevision{cr},
 								}
@@ -507,9 +454,10 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Healthy())
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -520,12 +468,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -544,7 +494,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -556,7 +506,7 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetGroupVersionKind(v1.ConfigurationRevisionGroupVersionKind)
@@ -573,9 +523,10 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Healthy())
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -585,7 +536,7 @@ func TestReconcile(t *testing.T) {
 						Applicator: resource.ApplyFn(func(_ context.Context, o client.Object, _ ...resource.ApplyOption) error {
 							want := &v1.ConfigurationRevision{}
 							want.SetLabels(map[string]string{"pkg.crossplane.io/package": "test"})
-							want.SetName("test-1234567")
+							want.SetName(revisionName)
 							want.SetOwnerReferences([]metav1.OwnerReference{{
 								APIVersion:         v1.SchemeGroupVersion.String(),
 								Kind:               v1.ConfigurationKind,
@@ -603,12 +554,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -627,7 +580,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -639,10 +592,11 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetGroupVersionKind(v1.ConfigurationRevisionGroupVersionKind)
+								cr.SetRevision(1)
 								cr.SetConditions(v1.RevisionHealthy())
 								cr.SetDesiredState(v1.PackageRevisionInactive)
 								c := v1.ConfigurationRevisionList{
@@ -655,7 +609,7 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Healthy())
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
@@ -667,12 +621,14 @@ func TestReconcile(t *testing.T) {
 							return errBoom
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -691,7 +647,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -703,10 +659,11 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetGroupVersionKind(v1.ConfigurationRevisionGroupVersionKind)
+								cr.SetRevision(1)
 								cr.SetConditions(v1.RevisionUnhealthy().WithMessage("some message"))
 								cr.SetDesiredState(v1.PackageRevisionActive)
 								c := v1.ConfigurationRevisionList{
@@ -719,9 +676,10 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Unhealthy().WithMessage("Package revision health is \"False\" with message: some message"))
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -732,12 +690,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -756,7 +716,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -768,7 +728,7 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetRevision(3)
@@ -803,9 +763,10 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetConditions(v1.Healthy())
 								want.SetConditions(v1.Active())
+								want.SetResolvedSource("xpkg.crossplane.io/test:v1.0.0")
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -816,7 +777,7 @@ func TestReconcile(t *testing.T) {
 						Applicator: resource.ApplyFn(func(_ context.Context, o client.Object, _ ...resource.ApplyOption) error {
 							want := &v1.ConfigurationRevision{}
 							want.SetLabels(map[string]string{"pkg.crossplane.io/package": "test"})
-							want.SetName("test-1234567")
+							want.SetName(revisionName)
 							want.SetOwnerReferences([]metav1.OwnerReference{{
 								APIVersion:         v1.SchemeGroupVersion.String(),
 								Kind:               v1.ConfigurationKind,
@@ -834,12 +795,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -858,7 +821,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -871,7 +834,7 @@ func TestReconcile(t *testing.T) {
 								l := o.(*v1.ConfigurationRevisionList)
 								cr := v1.ConfigurationRevision{
 									ObjectMeta: metav1.ObjectMeta{
-										Name: "test-1234567",
+										Name: revisionName,
 									},
 								}
 								cr.SetRevision(3)
@@ -908,7 +871,7 @@ func TestReconcile(t *testing.T) {
 								want := &v1.Configuration{}
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
-								want.SetCurrentRevision("test-1234567")
+								want.SetCurrentRevision(revisionName)
 								want.SetRevisionHistoryLimit(&revHistory)
 								if diff := cmp.Diff(want, o, test.EquateConditions()); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
@@ -918,12 +881,14 @@ func TestReconcile(t *testing.T) {
 							MockDelete: test.NewMockDeleteFn(errBoom),
 						},
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -942,7 +907,7 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
@@ -962,7 +927,7 @@ func TestReconcile(t *testing.T) {
 								})
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
 								want.SetActivationPolicy(&v1.AutomaticActivation)
-								want.SetConditions(commonv1.ReconcilePaused().WithMessage(reconcilePausedMsg))
+								want.SetConditions(xpv2.ReconcilePaused().WithMessage(reconcilePausedMsg))
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -970,12 +935,14 @@ func TestReconcile(t *testing.T) {
 							}),
 						},
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),
@@ -994,14 +961,14 @@ func TestReconcile(t *testing.T) {
 					newPackage:             func() v1.Package { return &v1.Configuration{} },
 					newPackageRevision:     func() v1.PackageRevision { return &v1.ConfigurationRevision{} },
 					newPackageRevisionList: func() v1.PackageRevisionList { return &v1.ConfigurationRevisionList{} },
-					client: resource.ClientApplicator{
+					kube: resource.ClientApplicator{
 						Client: &test.MockClient{
 							MockGet: test.NewMockGetFn(nil, func(o client.Object) error {
 								p := o.(*v1.Configuration)
 								p.SetName("test")
 								p.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
 								p.SetActivationPolicy(&v1.AutomaticActivation)
-								p.SetConditions(commonv1.ReconcilePaused())
+								p.SetConditions(xpv2.ReconcilePaused())
 								return nil
 							}),
 							MockList: test.NewMockListFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1010,7 +977,7 @@ func TestReconcile(t *testing.T) {
 								want.SetName("test")
 								want.SetGroupVersionKind(v1.ConfigurationGroupVersionKind)
 								want.SetActivationPolicy(&v1.AutomaticActivation)
-								want.Status.Conditions = []commonv1.Condition{}
+								want.Status.Conditions = []xpv2.Condition{}
 								if diff := cmp.Diff(want, o); diff != "" {
 									t.Errorf("-want, +got:\n%s", diff)
 								}
@@ -1021,12 +988,14 @@ func TestReconcile(t *testing.T) {
 							return nil
 						}),
 					},
-					pkg: &MockRevisioner{
-						MockRevision: NewMockRevisionFn("test-1234567", nil),
-					},
-					config: &fake.MockConfigStore{
-						MockPullSecretFor: fake.NewMockConfigStorePullSecretForFn("", "", nil),
-						MockRewritePath:   fake.NewMockRewritePathFn("", "", nil),
+					pkg: &fake.MockClient{
+						MockGet: fake.NewMockGetFn(&xpkg.Package{
+							Digest:          "sha256:1234567890123456789012345678901234567890123456789012345678901234",
+							Version:         "v1.0.0",
+							Source:          "xpkg.crossplane.io/test",
+							ResolvedVersion: "v1.0.0",
+							ResolvedSource:  "xpkg.crossplane.io/test",
+						}, nil),
 					},
 					log:        testLog,
 					record:     event.NewNopRecorder(),

@@ -1,4 +1,3 @@
-{{- $externalSecretStoresEnabled := include "crossplane.externalSecretStoresEnabled" . | eq "true" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -119,13 +118,18 @@ spec:
                 fieldPath: metadata.namespace
           - name: "WEBHOOK_SERVICE_PORT"
             value: "9443"
+          {{- if not (has .Values.webhooks.usage.failurePolicy (list "Fail" "Ignore")) }}
+          {{- fail "webhooks.usage.failurePolicy must be one of Fail or Ignore" }}
+          {{- end }}
+          - name: "USAGE_WEBHOOK_FAILURE_POLICY"
+            value: "{{ .Values.webhooks.usage.failurePolicy }}"
           {{- else }}
           - name: "ENABLE_WEBHOOKS"
             value: "false"
           {{- end }}
-          {{- if $externalSecretStoresEnabled }}
-          - name: "ESS_TLS_SERVER_SECRET_NAME"
-            value: ess-server-certs
+          {{- if not .Values.usages.enabled }}
+          - name: "ENABLE_USAGES"
+            value: "false"
           {{- end }}
           - name: "TLS_CA_SECRET_NAME"
             value: crossplane-root-ca
@@ -204,6 +208,10 @@ spec:
           - name: "ENABLE_WEBHOOKS"
             value: "false"
           {{- end }}
+          {{- if not .Values.usages.enabled }}
+          - name: "ENABLE_USAGES"
+            value: "false"
+          {{- end }}
           {{- if and .Values.webhooks.enabled .Values.webhooks.port }}
           - name: "WEBHOOK_PORT"
             value: "{{ .Values.webhooks.port }}"
@@ -237,13 +245,16 @@ spec:
           - mountPath: /certs
             name: ca-certs
           {{- end }}
-          {{- if .Values.extraVolumeMountsCrossplane }}
-          {{- toYaml .Values.extraVolumeMountsCrossplane | nindent 10 }}
+          {{- with .Values.extraVolumeMountsCrossplane }}
+          {{- tpl (toYaml .) $ | nindent 10 }}
           {{- end }}
           - mountPath: /tls/server
             name: tls-server-certs
           - mountPath: /tls/client
             name: tls-client-certs
+      {{- with .Values.sidecarsCrossplane }}
+      {{- tpl (toYaml .) $ | nindent 6 }}
+      {{- end }}
       volumes:
       - name: package-cache
         {{- if .Values.packageCache.pvc }}
@@ -280,8 +291,8 @@ spec:
       - name: tls-client-certs
         secret:
           secretName: crossplane-tls-client
-      {{- if .Values.extraVolumesCrossplane }}
-      {{- toYaml .Values.extraVolumesCrossplane | nindent 6 }}
+      {{- with .Values.extraVolumesCrossplane }}
+      {{- tpl (toYaml .) $ | nindent 6 }}
       {{- end }}
       {{- if .Values.nodeSelector }}
       nodeSelector: {{ toYaml .Values.nodeSelector | nindent 8 }}

@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 /*
@@ -108,7 +108,7 @@ type FunctionCredentials struct {
 	// A SecretRef is a reference to a secret containing credentials that should
 	// be supplied to the function.
 	// +optional
-	SecretRef *xpv1.SecretReference `json:"secretRef,omitempty"`
+	SecretRef *xpv2.SecretReference `json:"secretRef,omitempty"`
 }
 
 // A FunctionCredentialsSource is a source from which function
@@ -134,11 +134,18 @@ type FunctionRequirements struct {
 	// +listType=map
 	// +listMapKey=requirementName
 	RequiredResources []RequiredResourceSelector `json:"requiredResources,omitempty"`
+
+	// RequiredSchemas is a list of OpenAPI schemas that must be fetched before
+	// this function is called.
+	// +optional
+	// +listType=map
+	// +listMapKey=requirementName
+	RequiredSchemas []RequiredSchemaSelector `json:"requiredSchemas,omitempty"`
 }
 
 // RequiredResourceSelector selects a required resource.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.name) && !has(self.matchLabels)) || (!has(self.name) && has(self.matchLabels))",message="Either name or matchLabels must be specified, but not both"
+// +kubebuilder:validation:XValidation:rule="!(has(self.name) && has(self.matchLabels))",message="name and matchLabels are mutually exclusive"
 type RequiredResourceSelector struct {
 	// RequirementName is the unique name to identify this required resource
 	// in the Required Resources map in the function request.
@@ -192,4 +199,32 @@ func (r *RequiredResourceSelector) GetMatchLabels() map[string]string {
 // GetNamespace returns the namespace.
 func (r *RequiredResourceSelector) GetNamespace() *string {
 	return r.Namespace
+}
+
+// RequiredSchemaSelector selects a required OpenAPI schema.
+type RequiredSchemaSelector struct {
+	// RequirementName is the unique name to identify this required schema
+	// in the Required Schemas map in the function request.
+	RequirementName string `json:"requirementName"`
+
+	// APIVersion of the resource kind whose schema is required, e.g. "example.org/v1".
+	APIVersion string `json:"apiVersion"`
+
+	// Kind of resource whose schema is required, e.g. "MyResource".
+	Kind string `json:"kind"`
+}
+
+// GetRequirementName returns the requirement name.
+func (r *RequiredSchemaSelector) GetRequirementName() string {
+	return r.RequirementName
+}
+
+// GetAPIVersion returns the API version.
+func (r *RequiredSchemaSelector) GetAPIVersion() string {
+	return r.APIVersion
+}
+
+// GetKind returns the kind.
+func (r *RequiredSchemaSelector) GetKind() string {
+	return r.Kind
 }

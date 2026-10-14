@@ -47,15 +47,17 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	ucomposite "github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 	"github.com/crossplane/crossplane/v2/internal/circuit"
 	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/dependency"
 	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/watch"
 	apiextensionscontroller "github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
 	"github.com/crossplane/crossplane/v2/internal/engine"
 	"github.com/crossplane/crossplane/v2/internal/features"
-	"github.com/crossplane/crossplane/v2/internal/xcrd"
+	"github.com/crossplane/crossplane/v2/internal/xfn"
 )
 
 const (
@@ -70,7 +72,6 @@ const (
 	errStartController                = "cannot start composite resource controller"
 	errStopController                 = "cannot stop composite resource controller"
 	errStartWatches                   = "cannot start composite resource controller watches"
-	errAddIndex                       = "cannot add composite GVK index"
 	errAddFinalizer                   = "cannot add composite resource finalizer"
 	errRemoveFinalizer                = "cannot remove composite resource finalizer"
 	errDeleteCRD                      = "cannot delete composite resource CustomResourceDefinition"
@@ -185,6 +186,7 @@ func Setup(mgr ctrl.Manager, o apiextensionscontroller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1.CompositeResourceDefinition{}).
+		//nolint:staticcheck // TODO(adamwg) Stop using resource.NewPredicates after the v2.2 release.
 		Owns(&extv1.CustomResourceDefinition{}, builder.WithPredicates(resource.NewPredicates(IsCompositeResourceCRD()))).
 		WithOptions(o.ForControllerRuntime()).
 		Complete(errors.WithSilentRequeueOnConflict(r))
@@ -231,6 +233,14 @@ func WithControllerEngine(c ControllerEngine) ReconcilerOption {
 	}
 }
 
+// WithResourceTrackers specifies the registry of per-controller dependency
+// trackers the Reconciler should use.
+func WithResourceTrackers(t *dependency.Trackers) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.trackers = t
+	}
+}
+
 // WithCRDRenderer specifies how the Reconciler should render a
 // CompositeResourceDefinition's corresponding CustomResourceDefinition.
 func WithCRDRenderer(c CRDRenderer) ReconcilerOption {
@@ -263,6 +273,8 @@ func NewReconciler(ca resource.ClientApplicator, opts ...ReconcilerOption) *Reco
 
 		engine: &NopEngine{},
 
+		trackers: dependency.NewTrackers(dependency.DefaultNewTracker),
+
 		log:        logging.NewNopLogger(),
 		record:     event.NewNopRecorder(),
 		conditions: conditions.ObservedGenerationPropagationManager{},
@@ -289,7 +301,8 @@ type Reconciler struct {
 
 	composite definition
 
-	engine ControllerEngine
+	engine   ControllerEngine
+	trackers *dependency.Trackers
 
 	log        logging.Logger
 	record     event.Recorder
@@ -366,12 +379,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			// It's likely that we've already stopped this controller on a
 			// previous reconcile, but we try again just in case. This is a
 			// no-op if the controller was already stopped.
-			if err := r.engine.Stop(ctx, composite.ControllerName(d.GetName())); err != nil {
+			name := composite.ControllerName(d.GetName())
+			if err := r.engine.Stop(ctx, name); err != nil {
 				err = errors.Wrap(err, errStopController)
 				r.record.Event(d, event.Warning(reasonTerminateXR, err))
 
 				return reconcile.Result{}, err
 			}
+			// Drop the controller's dependency tracker, so if it's restarted it
+			// rebuilds from scratch as its XRs reconcile.
+			r.trackers.Delete(name)
 
 			log.Debug("Stopped composite resource controller")
 
@@ -431,12 +448,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 		// The controller must be stopped before the deletion of the CRD so that
 		// it doesn't crash.
-		if err := r.engine.Stop(ctx, composite.ControllerName(d.GetName())); err != nil {
+		name := composite.ControllerName(d.GetName())
+		if err := r.engine.Stop(ctx, name); err != nil {
 			err = errors.Wrap(err, errStopController)
 			r.record.Event(d, event.Warning(reasonTerminateXR, err))
 
 			return reconcile.Result{}, err
 		}
+		// Drop the controller's dependency tracker; the XRs are going away.
+		r.trackers.Delete(name)
 
 		log.Debug("Stopped composite resource controller")
 
@@ -499,32 +519,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if ControllerNeedsRestart(d) {
 		r.record.Event(d, event.Normal(reasonRestartXR, "XRD specification changed; restarting controller to apply updates"))
 
-		if err := r.engine.Stop(ctx, composite.ControllerName(d.GetName())); err != nil {
+		name := composite.ControllerName(d.GetName())
+		if err := r.engine.Stop(ctx, name); err != nil {
 			err = errors.Wrap(err, errStopController)
 			r.record.Event(d, event.Warning(reasonRestartXR, err))
 
 			return reconcile.Result{}, err
 		}
+		// Drop the controller's dependency tracker so it rebuilds from scratch
+		// when it restarts.
+		r.trackers.Delete(name)
 
 		log.Debug("XRD generation changed; stopped composite resource controller",
 			"observed-generation", d.GetCondition(v1.TypeEstablished).ObservedGeneration,
 			"current-generation", d.GetGeneration())
 	}
 
-	fetcher := composite.NewSecretConnectionDetailsFetcher(r.engine.GetCached())
-	fc := composite.NewFunctionComposer(r.engine.GetCached(), r.engine.GetUncached(), r.options.FunctionRunner,
-		composite.WithComposedResourceObserver(composite.NewExistingComposedResourceObserver(r.engine.GetCached(), r.engine.GetUncached(), fetcher)),
-		composite.WithCompositeConnectionDetailsFetcher(fetcher),
-	)
-
 	controllerName := composite.ControllerName(d.GetName())
 	gvk := d.GetCompositeGroupVersionKind()
-	cb := circuit.NewTokenBucketBreaker(controllerName,
-		circuit.WithMetrics(r.options.CircuitBreakerMetrics),
-		circuit.WithBurst(r.options.CircuitBreakerBurst),
-		circuit.WithRefillRatePerSecond(r.options.CircuitBreakerRefillRate),
-		circuit.WithOpenDuration(r.options.CircuitBreakerCooldown),
-	)
 
 	// All XRs have modern schema unless their XRD's scope is LegacyCluster.
 	schema := ucomposite.SchemaModern
@@ -532,16 +544,48 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		schema = ucomposite.SchemaLegacy
 	}
 
+	realtime := r.options.Features.Enabled(features.EnableBetaRealtimeCompositions)
+
+	// When realtime compositions are enabled the XR controller watches the
+	// resources each XR depends on. A per-controller tracker maps a changed
+	// dependency back to the XRs that depend on it, and tells the controller
+	// which kinds to watch. When realtime is disabled we use a nop tracker, so
+	// nothing is tracked or watched.
+	tracker := dependency.Tracker(dependency.NopTracker{})
+	if realtime {
+		tracker = r.trackers.Get(controllerName)
+	}
+
+	fetcher := composite.NewSecretConnectionDetailsFetcher(r.engine.GetCached())
+	fc := composite.NewFunctionComposer(r.engine.GetCached(), r.engine.GetUncached(), r.options.FunctionRunner,
+		composite.WithComposedResourceObserver(composite.NewExistingComposedResourceObserver(r.engine.GetCached(), r.engine.GetUncached(), fetcher)),
+		composite.WithCompositeConnectionDetailsFetcher(fetcher),
+		composite.WithRequiredSchemasFetcher(xfn.NewOpenAPIRequiredSchemasFetcher(r.options.OpenAPIClient)),
+		composite.WithResourceTracker(tracker),
+	)
+
+	cb := circuit.NewTokenBucketBreaker(controllerName,
+		circuit.WithMetrics(r.options.CircuitBreakerMetrics),
+		circuit.WithBurst(r.options.CircuitBreakerBurst),
+		circuit.WithRefillRatePerSecond(r.options.CircuitBreakerRefillRate),
+		circuit.WithOpenDuration(r.options.CircuitBreakerCooldown),
+	)
+
+	//nolint:staticcheck // TODO(adamwg) Stop using meta.ReferenceTo after the v2.2 release.
+	defaultCompositionSelector := composite.NewAPIDefaultCompositionSelector(r.engine.GetCached(), *meta.ReferenceTo(d, v1.CompositeResourceDefinitionGroupVersionKind), r.record)
+
 	ro := []composite.ReconcilerOption{
 		composite.WithCompositeSchema(schema),
 		composite.WithCompositionSelector(composite.NewCompositionSelectorChain(
 			composite.NewEnforcedCompositionSelector(r.client.Client, corev1.ObjectReference{Name: d.Name}, r.record),
-			composite.NewAPIDefaultCompositionSelector(r.engine.GetCached(), *meta.ReferenceTo(d, v1.CompositeResourceDefinitionGroupVersionKind), r.record),
+			defaultCompositionSelector,
 			composite.NewAPILabelSelectorResolver(r.engine.GetCached()),
 		)),
+		composite.WithCompositionRevisionSelector(defaultCompositionSelector),
 		composite.WithLogger(r.log.WithValues("controller", controllerName)),
 		composite.WithRecorder(r.record.WithAnnotations("controller", controllerName)),
 		composite.WithPollInterval(r.options.PollInterval),
+		composite.WithMinPollInterval(r.options.MinPollInterval),
 		composite.WithCircuitBreaker(cb),
 		composite.WithAuthorizer(r.engine),
 		composite.WithComposer(fc),
@@ -554,23 +598,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		)
 	}
 
-	// If realtime compositions are enabled we pass the ControllerEngine to the
-	// XR reconciler so that it can start watches for composed resources.
-	if r.options.Features.Enabled(features.EnableBetaRealtimeCompositions) {
-		gvk := d.GetCompositeGroupVersionKind()
-		u := &kunstructured.Unstructured{}
-		u.SetAPIVersion(gvk.GroupVersion().String())
-		u.SetKind(gvk.Kind)
-
-		// Add an index to the controller engine's client.
-		if err := r.engine.GetFieldIndexer().IndexField(ctx, u, compositeResourcesRefsIndex, IndexCompositeResourcesRefs(schema)); err != nil {
-			r.log.Debug(errAddIndex, "error", err)
-		}
-
-		cmf := CompositeResourcesMapFunc(d.GetCompositeGroupVersionKind(), r.engine.GetCached(), r.log)
-		h := handler.EnqueueRequestsFromMapFunc(circuit.NewMapFunc(cmf, cb))
+	// If realtime compositions are enabled the XR controller starts watches
+	// dynamically for the resources each XR depends on. The tracker's Dependants
+	// maps a changed dependency back to the XRs to reconcile.
+	if realtime {
+		h := handler.EnqueueRequestsFromMapFunc(circuit.NewMapFunc(DependantsMapFunc(tracker), cb))
 		ro = append(ro,
-			composite.WithWatchStarter(controllerName, h, r.engine),
+			composite.WithWatchStarter(controllerName, h, r.engine, tracker),
 			composite.WithPollInterval(0), // Disable polling.
 		)
 	}
@@ -591,11 +625,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// ControllerOptions instead? It bothers me that this is the only feature
 	// flagged block outside that method.
 	co := []engine.ControllerOption{engine.WithRuntimeOptions(ko)}
-	if r.options.Features.Enabled(features.EnableBetaRealtimeCompositions) {
-		// If realtime composition is enabled we'll start watches dynamically,
-		// so we want to garbage collect watches for composed resource kinds
-		// that aren't used anymore.
-		gc := watch.NewGarbageCollector(controllerName, gvk, r.engine, watch.WithCompositeSchema(schema), watch.WithLogger(log))
+	if realtime {
+		// We start dependency watches dynamically, so we garbage collect watches
+		// for kinds no XR depends on anymore.
+		gc := watch.NewGarbageCollector(controllerName, r.engine, tracker, watch.WithLogger(log))
 		co = append(co, engine.WithWatchGarbageCollector(gc))
 	}
 
@@ -622,7 +655,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	crmf := CompositionRevisionMapFunc(gvk, schema, r.engine.GetCached(), log)
 	crh := handler.EnqueueRequestsFromMapFunc(circuit.NewMapFunc(crmf, cb))
 
-	h := handler.EnqueueRequestsFromMapFunc(circuit.NewMapFunc(SelfMapFunc(), cb))
+	h := handler.EnqueueRequestsFromMapFunc(circuit.NewMapFunc(circuit.NewSelfDeleteResetMapFunc(SelfMapFunc(), cb), cb))
 
 	// StartWatches is idempotent - it only starts watches that don't already
 	// exist. We call it every reconcile to ensure watches are started, even if

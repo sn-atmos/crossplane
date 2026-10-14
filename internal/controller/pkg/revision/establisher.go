@@ -19,6 +19,8 @@ package revision
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -29,17 +31,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
-	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
 
 const (
@@ -51,6 +54,7 @@ const (
 	errWebhookSecretWithoutCABundle = "the value for the key tls.crt cannot be empty"
 	errFmtGetOwnedObject            = "cannot get owned object: %s/%s"
 	errFmtUpdateOwnedObject         = "cannot update owned object: %s/%s"
+	errFmtGetControllingRevision    = "cannot get %s %q that currently controls this object"
 )
 
 const (
@@ -62,7 +66,7 @@ const (
 // API server by checking that control or ownership can be established for all
 // resources and then establishing it.
 type Establisher interface {
-	Establish(ctx context.Context, objects []runtime.Object, parent v1.PackageRevision, control bool) ([]xpv1.TypedReference, error)
+	Establish(ctx context.Context, objects []runtime.Object, parent v1.PackageRevision, control bool) ([]xpv2.TypedReference, error)
 	ReleaseObjects(ctx context.Context, parent v1.PackageRevision) error
 }
 
@@ -75,7 +79,7 @@ func NewNopEstablisher() *NopEstablisher {
 type NopEstablisher struct{}
 
 // Establish does nothing.
-func (*NopEstablisher) Establish(_ context.Context, _ []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv1.TypedReference, error) {
+func (*NopEstablisher) Establish(_ context.Context, _ []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
 	return nil, nil
 }
 
@@ -89,14 +93,16 @@ func (*NopEstablisher) ReleaseObjects(_ context.Context, _ v1.PackageRevision) e
 type APIEstablisher struct {
 	client                           client.Client
 	namespace                        string
+	newPackageRevision               func() v1.PackageRevision
 	MaxConcurrentPackageEstablishers int
 }
 
 // NewAPIEstablisher creates a new APIEstablisher.
-func NewAPIEstablisher(client client.Client, namespace string, maxConcurrentPackageEstablishers int) *APIEstablisher {
+func NewAPIEstablisher(client client.Client, namespace string, newPackageRevision func() v1.PackageRevision, maxConcurrentPackageEstablishers int) *APIEstablisher {
 	return &APIEstablisher{
 		client:                           client,
 		namespace:                        namespace,
+		newPackageRevision:               newPackageRevision,
 		MaxConcurrentPackageEstablishers: maxConcurrentPackageEstablishers,
 	}
 }
@@ -112,8 +118,13 @@ type currentDesired struct {
 
 // Establish checks that control or ownership of resources can be established by
 // parent, then establishes it.
-func (e *APIEstablisher) Establish(ctx context.Context, objs []runtime.Object, parent v1.PackageRevision, control bool) ([]xpv1.TypedReference, error) {
+func (e *APIEstablisher) Establish(ctx context.Context, objs []runtime.Object, parent v1.PackageRevision, control bool) ([]xpv2.TypedReference, error) {
 	err := e.addLabels(objs, parent)
+	if err != nil {
+		return nil, err
+	}
+
+	err = e.addAnnotations(objs, parent)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +192,7 @@ func (e *APIEstablisher) ReleaseObjects(ctx context.Context, parent v1.PackageRe
 					found = true
 
 					if ors[i].Controller != nil && *ors[i].Controller {
-						ors[i].Controller = ptr.To(false)
+						ors[i].Controller = new(false)
 						changed = true
 					}
 
@@ -228,11 +239,30 @@ func (e *APIEstablisher) addLabels(objs []runtime.Object, parent v1.PackageRevis
 
 		labels := d.GetLabels()
 		if labels != nil {
-			for key, value := range commonLabels {
-				labels[key] = value
-			}
+			maps.Copy(labels, commonLabels)
 		} else {
 			d.SetLabels(commonLabels)
+		}
+	}
+
+	return nil
+}
+
+func (e *APIEstablisher) addAnnotations(objs []runtime.Object, parent v1.PackageRevision) error {
+	commonAnnotations := parent.GetCommonAnnotations()
+
+	for _, obj := range objs {
+		// convert to resource.Object to be able to access metadata
+		d, ok := obj.(resource.Object)
+		if !ok {
+			return errors.New(errConfResourceObject)
+		}
+
+		annotations := d.GetAnnotations()
+		if annotations != nil {
+			maps.Copy(annotations, commonAnnotations)
+		} else {
+			d.SetAnnotations(commonAnnotations)
 		}
 	}
 
@@ -448,11 +478,11 @@ func (e *APIEstablisher) getWebhookTLSCert(ctx context.Context, parentWithRuntim
 	return webhookTLSCert, nil
 }
 
-func (e *APIEstablisher) establish(ctx context.Context, allObjs []currentDesired, parent client.Object, control bool) ([]xpv1.TypedReference, error) {
+func (e *APIEstablisher) establish(ctx context.Context, allObjs []currentDesired, parent client.Object, control bool) ([]xpv2.TypedReference, error) {
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(e.MaxConcurrentPackageEstablishers)
 
-	out := make(chan xpv1.TypedReference, len(allObjs))
+	out := make(chan xpv2.TypedReference, len(allObjs))
 	for _, cd := range allObjs {
 		g.Go(func() error {
 			if !cd.Exists {
@@ -492,7 +522,7 @@ func (e *APIEstablisher) establish(ctx context.Context, allObjs []currentDesired
 
 	close(out)
 
-	resourceRefs := []xpv1.TypedReference{}
+	resourceRefs := []xpv2.TypedReference{}
 	for ref := range out {
 		resourceRefs = append(resourceRefs, ref)
 	}
@@ -508,7 +538,7 @@ func (e *APIEstablisher) create(ctx context.Context, obj resource.Object, parent
 	// get deleted when the new revision doesn't include it in order not to lose
 	// user data, such as custom resources of an old CRD.
 	if pkgRef, ok := GetPackageOwnerReference(parent); ok {
-		pkgRef.Controller = ptr.To(false)
+		pkgRef.Controller = new(false)
 		refs = append(refs, pkgRef)
 	}
 	// Overwrite any owner references on the desired object.
@@ -522,7 +552,7 @@ func (e *APIEstablisher) update(ctx context.Context, current, desired resource.O
 	// get deleted when the new revision doesn't include it in order not to lose
 	// user data, such as custom resources of an old CRD.
 	if pkgRef, ok := GetPackageOwnerReference(parent); ok {
-		pkgRef.Controller = ptr.To(false)
+		pkgRef.Controller = new(false)
 		meta.AddOwnerReference(current, pkgRef)
 	}
 
@@ -537,7 +567,17 @@ func (e *APIEstablisher) update(ctx context.Context, current, desired resource.O
 	// version to that of the current.
 	desired.SetOwnerReferences(current.GetOwnerReferences())
 
-	if err := meta.AddControllerReference(desired, meta.AsController(meta.TypedReferenceTo(parent, parent.GetObjectKind().GroupVersionKind()))); err != nil {
+	ctrlRef := meta.AsController(meta.TypedReferenceTo(parent, parent.GetObjectKind().GroupVersionKind()))
+
+	// A revision we're replacing may still be the object's controller, because
+	// it hasn't relinquished control yet or because it was replaced or deleted
+	// before it could. Demote it to be just an owner, so the hand-off doesn't depend on
+	// the order in which the two revisions reconcile.
+	if err := e.demoteOldController(ctx, desired, parent, ctrlRef); err != nil {
+		return err
+	}
+
+	if err := meta.AddControllerReference(desired, ctrlRef); err != nil {
 		return err
 	}
 
@@ -550,6 +590,106 @@ func (e *APIEstablisher) update(ctx context.Context, current, desired resource.O
 
 	// This should be a server side apply?
 	return e.client.Update(ctx, desired, opts...)
+}
+
+// demoteOldController demotes obj's controller owner reference to a plain owner
+// reference, so that want's owner can become the controller instead. It only
+// does so when the current controller is a revision this parent may take over
+// from: another revision of the same package, or a revision that no longer
+// exists.
+//
+// We only get here for a revision whose desired state is active, and a package
+// has at most one active revision, so taking control from a sibling revision is
+// safe. It's what lets a package upgrade complete even if the outgoing revision
+// never relinquishes control, e.g. because it was deleted, replaced, or paused.
+func (e *APIEstablisher) demoteOldController(ctx context.Context, obj, parent resource.Object, want metav1.OwnerReference) error {
+	c := metav1.GetControllerOf(obj)
+	if c == nil || c.UID == want.UID {
+		return nil
+	}
+
+	// Only ever take control from the same kind of revision we are. We compare
+	// group and kind rather than the whole API version, so that we still
+	// recognise a controller reference written through another version of our
+	// own type, which the API server may well still serve.
+	got := schema.FromAPIVersionAndKind(c.APIVersion, c.Kind).GroupKind()
+	ours := schema.FromAPIVersionAndKind(want.APIVersion, want.Kind).GroupKind()
+
+	if got != ours {
+		return nil
+	}
+
+	ok, err := e.controlledByReplacedRevision(ctx, *c, parent)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		// Leave the current controller in place. AddControllerReference then
+		// fails with the same error it always has, which is what we want for
+		// an object that belongs to something else.
+		return nil
+	}
+
+	// Keep the old revision as a plain owner rather than dropping it, so we
+	// don't change when the object gets garbage collected.
+	refs := slices.Clone(obj.GetOwnerReferences())
+	for i := range refs {
+		if refs[i].UID == c.UID {
+			refs[i].Controller = new(false)
+			break
+		}
+	}
+
+	obj.SetOwnerReferences(refs)
+
+	return nil
+}
+
+// controlledByReplacedRevision returns true if the supplied controller owner
+// reference belongs to a revision of the same package as parent, or to a
+// revision that no longer exists. Either way it will never relinquish control
+// of the objects it established.
+func (e *APIEstablisher) controlledByReplacedRevision(ctx context.Context, c metav1.OwnerReference, parent resource.Object) (bool, error) {
+	pkg := parent.GetLabels()[v1.LabelParentPackage]
+	if pkg == "" {
+		// We can't tell what package we belong to, so we can't tell whether the
+		// controller is a revision of it.
+		return false, nil
+	}
+
+	// The controller is a revision of our own kind, so this is the type we need
+	// to read it into.
+	rev := e.newPackageRevision()
+
+	err := e.client.Get(ctx, types.NamespacedName{Name: c.Name}, rev)
+	if kerrors.IsNotFound(err) {
+		// The revision that took control is gone. The API server garbage
+		// collects the dangling owner reference eventually, but we don't want to
+		// wait for it.
+		return true, nil
+	}
+
+	if err != nil {
+		return false, errors.Wrapf(err, errFmtGetControllingRevision, c.Kind, c.Name)
+	}
+
+	// A revision with the same name but a different UID replaced the one that
+	// took control, so the original is gone too.
+	if rev.GetUID() != c.UID {
+		return true, nil
+	}
+
+	// Only take control from a revision of our own package.
+	if rev.GetLabels()[v1.LabelParentPackage] != pkg {
+		return false, nil
+	}
+
+	// Only take control from a revision that is on its way out. An active
+	// revision should keep control of its objects, and taking it from one would
+	// let a stale reconcile of a revision that was just deactivated take control
+	// back from the revision that replaced it, and flap between the two.
+	return rev.GetDesiredState() == v1.PackageRevisionInactive, nil
 }
 
 func (e *APIEstablisher) merge(_ context.Context, c, d resource.Object) error {
@@ -578,4 +718,37 @@ func GetPackageOwnerReference(rev resource.Object) (metav1.OwnerReference, bool)
 	}
 
 	return metav1.OwnerReference{}, false
+}
+
+// FilteringEstablisher wraps another establisher, but filters the objects that
+// get passed to it so that only certain kinds are allowed.
+type FilteringEstablisher struct {
+	wrap Establisher
+	gks  []schema.GroupKind
+}
+
+// NewFilteringEstablisher creates a new FilteringEstablisher.
+func NewFilteringEstablisher(wrap Establisher, gks ...schema.GroupKind) *FilteringEstablisher {
+	return &FilteringEstablisher{
+		wrap: wrap,
+		gks:  gks,
+	}
+}
+
+// Establish filters objects, then uses the wrapped establisher to establish
+// them.
+func (e *FilteringEstablisher) Establish(ctx context.Context, objects []runtime.Object, parent v1.PackageRevision, control bool) ([]xpv2.TypedReference, error) {
+	filtered := make([]runtime.Object, 0, len(objects))
+	for _, obj := range objects {
+		if slices.Contains(e.gks, obj.GetObjectKind().GroupVersionKind().GroupKind()) {
+			filtered = append(filtered, obj)
+		}
+	}
+
+	return e.wrap.Establish(ctx, filtered, parent, control)
+}
+
+// ReleaseObjects uses the wrapped establisher to release objects.
+func (e *FilteringEstablisher) ReleaseObjects(ctx context.Context, parent v1.PackageRevision) error {
+	return e.wrap.ReleaseObjects(ctx, parent)
 }

@@ -54,11 +54,12 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"sigs.k8s.io/yaml"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 // DefaultPollInterval is the suggested poll interval for wait.For.
@@ -369,7 +370,7 @@ func ResourceDeletedWithin(d time.Duration, o k8s.Object) features.Func {
 // ResourceHasConditionWithin checks if a single resource becomes the supplied
 // conditions within the supplied duration. Comparison of conditions is modulo
 // messages.
-func ResourceHasConditionWithin(d time.Duration, o k8s.Object, cds ...xpv1.Condition) features.Func {
+func ResourceHasConditionWithin(d time.Duration, o k8s.Object, cds ...xpv2.Condition) features.Func {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		t.Helper()
 
@@ -387,10 +388,10 @@ func ResourceHasConditionWithin(d time.Duration, o k8s.Object, cds ...xpv1.Condi
 		t.Logf("Waiting %s for %s to become %s...", d, identifier(o), desired)
 
 		ogReport := make(map[string]bool)
-		old := make([]xpv1.Condition, len(cds))
+		old := make([]xpv2.Condition, len(cds))
 		match := func(o k8s.Object) bool {
 			u := asUnstructured(o)
-			s := xpv1.ConditionedStatus{}
+			s := xpv2.ConditionedStatus{}
 			_ = fieldpath.Pave(u.Object).GetValueInto("status", &s)
 
 			for i, want := range cds {
@@ -451,7 +452,7 @@ func ResourceHasConditionWithin(d time.Duration, o k8s.Object, cds ...xpv1.Condi
 // ResourcesHaveConditionWithin fails a test if the supplied resources do not
 // have (i.e. become) the supplied conditions within the supplied duration.
 // Comparison of conditions is modulo messages.
-func ResourcesHaveConditionWithin(d time.Duration, dir, pattern string, cds ...xpv1.Condition) features.Func {
+func ResourcesHaveConditionWithin(d time.Duration, dir, pattern string, cds ...xpv2.Condition) features.Func {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		t.Helper()
 
@@ -482,8 +483,8 @@ func or(a, b string) string {
 // established. Most of our Crossplane status conditions are defined elsewhere
 // (e.g. in the xpv1 package), but this isn't so we define it here for
 // convenience.
-func CRDInitialNamesAccepted() xpv1.Condition {
-	return xpv1.Condition{
+func CRDInitialNamesAccepted() xpv2.Condition {
+	return xpv2.Condition{
 		Type:   "Established",
 		Status: corev1.ConditionTrue,
 		Reason: "InitialNamesAccepted",
@@ -786,6 +787,7 @@ func ApplyHandler(r *resources.Resources, manager string, osh ...onSuccessHandle
 		// sometimes, e.g. due to conflicts with a provider managing the same
 		// fields. I'm guessing controller-runtime is setting providers as a
 		// field manager at create time even though it doesn't use SSA?
+		//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 		if err := r.GetControllerRuntimeClient().Patch(ctx, obj, client.Apply, client.FieldOwner(manager), client.ForceOwnership); err != nil {
 			return err
 		}
@@ -852,7 +854,7 @@ func ClaimUnderTestMustNotChangeWithin(d time.Duration) features.Func {
 
 		t.Logf("Ensuring claim %s does not change within %s", identifier(cm), d.String())
 
-		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d)); err != nil {
+		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d), wait.WithInterval(DefaultPollInterval)); err != nil {
 			if deadlineExceed(err) {
 				t.Logf("Claim %s did not change within %s", identifier(cm), d.String())
 				return ctx
@@ -907,7 +909,7 @@ func CompositeUnderTestMustNotChangeWithin(d time.Duration) features.Func {
 
 		t.Logf("Ensuring composite resource %s does not change within %s", identifier(cp), d.String())
 
-		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d)); err != nil {
+		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d), wait.WithInterval(DefaultPollInterval)); err != nil {
 			if deadlineExceed(err) {
 				t.Logf("Composite resource %s did not change within %s", identifier(cp), d.String())
 				return ctx
@@ -961,7 +963,7 @@ func CompositeResourceMustMatchWithin(d time.Duration, dir, claimFile string, ma
 			return match(&composite.Unstructured{Unstructured: *u})
 		}
 
-		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d)); err != nil && count.Load() > 0 {
+		if err := wait.For(conditions.New(c.Client().Resources()).ResourcesMatch(list, m), wait.WithTimeout(d), wait.WithInterval(DefaultPollInterval)); err != nil && count.Load() > 0 {
 			t.Errorf("composite %s did not match the condition before timeout (%s): %s\n\n", identifier(&uxr), d.String(), err)
 			return ctx
 		}
@@ -1194,7 +1196,7 @@ func ComposedResourcesHaveFieldValueWithin(d time.Duration, dir, file, path stri
 		t.Helper()
 
 		// Wait for the XR to be available.
-		ResourcesHaveConditionWithin(d, dir, file, xpv1.Available(), xpv1.ReconcileSuccess())(ctx, t, c)
+		ResourcesHaveConditionWithin(d, dir, file, xpv2.Available(), xpv2.ReconcileSuccess())(ctx, t, c)
 
 		uxr := &composite.Unstructured{} // modern schema
 		if err := decoder.DecodeFile(os.DirFS(dir), file, uxr, options...); err != nil {
@@ -1356,7 +1358,7 @@ func LogResources(list k8s.ObjectList, listOptions ...resources.ListOption) feat
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		t.Helper()
 
-		prev := map[string]map[xpv1.ConditionType]xpv1.Condition{}
+		prev := map[string]map[xpv2.ConditionType]xpv2.Condition{}
 
 		pollCtx, cancel := context.WithCancel(ctx)
 		t.Cleanup(cancel)
@@ -1385,10 +1387,10 @@ func LogResources(list k8s.ObjectList, listOptions ...resources.ListOption) feat
 				}
 
 				u := asUnstructured(obj)
-				s := xpv1.ConditionedStatus{}
+				s := xpv2.ConditionedStatus{}
 				_ = fieldpath.Pave(u.Object).GetValueInto("status", &s)
 
-				got := map[xpv1.ConditionType]xpv1.Condition{}
+				got := map[xpv2.ConditionType]xpv2.Condition{}
 				for _, c := range s.Conditions {
 					got[c.Type] = c
 				}
@@ -1486,7 +1488,7 @@ func identifier(o k8s.Object) string {
 	if k == "" {
 		t := reflect.TypeOf(o)
 		if t != nil {
-			if t.Kind() == reflect.Ptr {
+			if t.Kind() == reflect.Pointer {
 				t = t.Elem()
 			}
 
@@ -1517,6 +1519,77 @@ func FilterByGK(gk schema.GroupKind) func(o k8s.Object) bool {
 
 		return o.GetObjectKind().GroupVersionKind().Group == gk.Group && o.GetObjectKind().GroupVersionKind().Kind == gk.Kind
 	}
+}
+
+// SolelyOwnedBy returns a FieldValueChecker for the "metadata.ownerReferences" field path. It
+// matches when the object has exactly one owner reference, that reference names the given owner,
+// and it is controlling.
+//
+// It reads the unstructured form of the field, a []any of map[string]any, so it will not match at
+// any other field path.
+func SolelyOwnedBy(name string) FieldValueChecker {
+	return func(got any) bool {
+		ors, ok := got.([]any)
+		if !ok || len(ors) != 1 {
+			return false
+		}
+
+		r, ok := ors[0].(map[string]any)
+		if !ok {
+			return false
+		}
+
+		n, _ := r["name"].(string)
+		c, _ := r["controller"].(bool)
+
+		return n == name && c
+	}
+}
+
+// ControlledBy returns a FieldValueChecker for the "metadata.ownerReferences" field path. It matches
+// when the object has a controlling owner reference naming the given owner. Unlike SolelyOwnedBy it
+// tolerates other, non-controlling owners.
+//
+// It reads the unstructured form of the field, a []any of map[string]any, so it will not match at
+// any other field path.
+func ControlledBy(name string) FieldValueChecker {
+	return func(got any) bool { return hasOwnerReference(got, name, true) }
+}
+
+// OwnedButNotControlledBy returns a FieldValueChecker for the "metadata.ownerReferences" field path.
+// It matches when the object has an owner reference naming the given owner that is not controlling,
+// as a revision that has handed control over to another one has. Other owners are allowed, which is
+// what distinguishes it from SolelyOwnedBy.
+//
+// It reads the unstructured form of the field, a []any of map[string]any, so it will not match at
+// any other field path.
+func OwnedButNotControlledBy(name string) FieldValueChecker {
+	return func(got any) bool { return hasOwnerReference(got, name, false) }
+}
+
+// hasOwnerReference returns true if the supplied unstructured owner references include one that
+// names the supplied owner and whose controller flag is the supplied value.
+func hasOwnerReference(got any, name string, controller bool) bool {
+	ors, ok := got.([]any)
+	if !ok {
+		return false
+	}
+
+	for _, or := range ors {
+		r, ok := or.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		n, _ := r["name"].(string)
+		c, _ := r["controller"].(bool)
+
+		if n == name && c == controller {
+			return true
+		}
+	}
+
+	return false
 }
 
 func toYAML(objs ...client.Object) string {

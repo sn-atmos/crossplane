@@ -4,78 +4,100 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v0.1.0)'
+        description: 'Release version (e.g. v1.18.0)'
         required: true
       channel:
         description: 'Release channel'
         required: true
         default: 'stable'
-      # Note: For pre-releases, we want to promote the pre-release version to
-      # the (stable) channel, but not set it as the "current" version.
       pre-release:
         type: boolean
-        description: 'This is a pre-release'
+        description: 'This is a pre-release (will not update current pointer)'
         required: true
         default: false
 
-env:
-  # Common versions
-  EARTHLY_VERSION: '0.8.16'
+permissions:
+  contents: read
 
-  # Common users. We can't run a step 'if secrets.AWS_USR != ""' but we can run
-  # a step 'if env.AWS_USR' != ""', so we copy these to succinctly test whether
-  # credentials have been provided before trying to run steps that need them.
+env:
   DOCKER_USR: ${{ secrets.DOCKER_USR }}
-  GHCR_USR: ${{ github.actor }}
   AWS_USR: ${{ secrets.AWS_USR }}
   UPBOUND_MARKETPLACE_PUSH_ROBOT_USR: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }}
 
 jobs:
-  promote-artifacts:
-    runs-on: ubuntu-22.04
+  promote:
+    permissions:
+      contents: read
+      packages: write  # for pushing to ghcr.io
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup Earthly
-        uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          version: ${{ env.EARTHLY_VERSION }}
+          name: crossplane
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Promote Image to docker.io/crossplane/crossplane:${{ inputs.channel }}
+      - name: Login to DockerHub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         if: env.DOCKER_USR != ''
-        run: |
-          earthly --strict \
-            --push \
-            --secret DOCKER_USER=${{ secrets.DOCKER_USR }} \
-            --secret DOCKER_PASSWORD=${{ secrets.DOCKER_PSW }} \
-            +ci-promote-image --CHANNEL=${{ inputs.channel }} --CROSSPLANE_VERSION=${{ inputs.version }} --CROSSPLANE_REPO=docker.io/crossplane/crossplane
+        with:
+          username: ${{ secrets.DOCKER_USR }}
+          password: ${{ secrets.DOCKER_PSW }}
 
-      - name: Promote Image to ghcr.io/crossplane/crossplane:${{ inputs.channel }}
-        if: env.GHCR_USR != ''
-        run: |
-          earthly --strict \
-            --push \
-            --secret DOCKER_USER=${{ github.actor }} \
-            --secret DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} \
-            +ci-promote-image --CHANNEL=${{ inputs.channel }} --CROSSPLANE_VERSION=${{ inputs.version }} --CROSSPLANE_REPO=ghcr.io/crossplane/crossplane
-
-      - name: Promote Image to xpkg.upbound.io/crossplane/crossplane:${{ inputs.channel }}
+      - name: Login to Upbound
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         if: env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != ''
-        run: |
-          earthly --strict \
-          --push \
-          --secret DOCKER_USER=${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }} \
-          --secret DOCKER_PASSWORD=${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_PSW }} \
-          +ci-promote-image --CHANNEL=${{ inputs.channel }} --CROSSPLANE_VERSION=${{ inputs.version }} --CROSSPLANE_REPO=xpkg.upbound.io/crossplane/crossplane
+        with:
+          registry: xpkg.upbound.io
+          username: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }}
+          password: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_PSW }}
 
-      - name: Promote Build Artifacts to https://releases.crossplane.io/${{ inputs.channel }}
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote Images to DockerHub
+        if: env.DOCKER_USR != ''
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: nix run .#promote-images -- crossplane/crossplane "$VERSION" "$CHANNEL"
+
+      - name: Promote Images to Upbound
+        if: env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != ''
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: nix run .#promote-images -- xpkg.upbound.io/crossplane/crossplane "$VERSION" "$CHANNEL"
+
+      - name: Promote Images to GitHub Container Registry
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: nix run .#promote-images -- ghcr.io/crossplane/crossplane "$VERSION" "$CHANNEL"
+
+      - name: Promote Artifacts to S3
         if: env.AWS_USR != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_USR }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
+          AWS_DEFAULT_REGION: us-east-1
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          PRE_RELEASE: ${{ inputs.pre-release }}
         run: |
-          earthly --strict \
-            --push \
-            --secret=AWS_ACCESS_KEY_ID=${{ secrets.AWS_USR }} \
-            --secret=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_PSW }} \
-            +ci-promote-build-artifacts --AWS_DEFAULT_REGION=us-east-1 --CHANNEL=${{ inputs.channel }} --BUILD_DIR=${GITHUB_REF##*/} --PRERELEASE=${{ inputs.pre-release }} --CROSSPLANE_VERSION=${{ inputs.version }}
+          PRERELEASE_FLAG=""
+          if [ "$PRE_RELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          nix run .#promote-artifacts -- "${GITHUB_REF##*/}" "$VERSION" "$CHANNEL" $PRERELEASE_FLAG

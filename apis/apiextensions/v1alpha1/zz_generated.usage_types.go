@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Generated from apis/apiextensions/v1beta1/usage_types.go by ./hack/duplicate_api_type.sh. DO NOT EDIT.
+// Generated from apiextensions/v1beta1/usage_types.go by ./hack/duplicate_api_type.sh. DO NOT EDIT.
 
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 // ResourceRef is a reference to a resource.
@@ -77,7 +77,7 @@ type UsageSpec struct {
 
 // UsageStatus defines the observed state of Usage.
 type UsageStatus struct {
-	xpv1.ConditionedStatus `json:",inline"`
+	xpv2.ConditionedStatus `json:",inline"`
 }
 
 // A Usage defines a deletion blocking relationship between two resources.
@@ -86,7 +86,7 @@ type UsageStatus struct {
 // resources with dependent resources.
 //
 // Read the Crossplane documentation for
-// [more information about Usages](https://docs.crossplane.io/latest/concepts/usages).
+// [more information about Usages](https://docs.crossplane.io/latest/managed-resources/usages/).
 //
 // Deprecated: Use protection.crossplane.io Usage or ClusterUsage.
 // +kubebuilder:object:root=true

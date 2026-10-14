@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package operation implements day two operations.
 package operation
 
 import (
@@ -22,7 +21,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
@@ -30,7 +29,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	opscontroller "github.com/crossplane/crossplane/v2/internal/controller/ops/controller"
 	"github.com/crossplane/crossplane/v2/internal/xfn"
 )
@@ -40,10 +39,11 @@ import (
 func Setup(mgr ctrl.Manager, o opscontroller.Options) error {
 	name := "ops/" + strings.ToLower(v1alpha1.OperationGroupKind)
 
-	r := NewReconciler(mgr,
+	r := NewReconciler(mgr.GetClient(),
 		WithLogger(o.Logger.WithValues("controller", name)),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)),
-		WithFunctionRunner(o.FunctionRunner))
+		WithFunctionRunner(o.FunctionRunner),
+		WithRequiredSchemasFetcher(xfn.NewOpenAPIRequiredSchemasFetcher(o.OpenAPIClient)))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
@@ -90,15 +90,23 @@ func WithRequiredResourcesFetcher(f xfn.RequiredResourcesFetcher) ReconcilerOpti
 	}
 }
 
-// NewReconciler returns a Reconciler of Usages.
-func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
+// WithRequiredSchemasFetcher specifies how the Reconciler should fetch required schemas.
+func WithRequiredSchemasFetcher(f xfn.RequiredSchemasFetcher) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.schemas = f
+	}
+}
+
+// NewReconciler returns a Reconciler of Operations.
+func NewReconciler(c client.Client, opts ...ReconcilerOption) *Reconciler {
 	r := &Reconciler{
-		client:     mgr.GetClient(),
+		client:     c,
 		log:        logging.NewNopLogger(),
 		record:     event.NewNopRecorder(),
 		conditions: conditions.ObservedGenerationPropagationManager{},
-		functions:  xfn.NewRevisionCapabilityChecker(mgr.GetClient()),
-		resources:  xfn.NewExistingRequiredResourcesFetcher(mgr.GetClient()),
+		functions:  xfn.NewRevisionCapabilityChecker(c),
+		resources:  xfn.NewExistingRequiredResourcesFetcher(c),
+		schemas:    xfn.NopRequiredSchemasFetcher{},
 	}
 
 	for _, f := range opts {

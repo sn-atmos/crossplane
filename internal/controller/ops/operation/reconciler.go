@@ -23,6 +23,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
@@ -40,8 +40,11 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
-	pkgmetav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	"github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
+	pkgmetav1 "github.com/crossplane/crossplane/apis/v2/pkg/meta/v1"
+	xcomposite "github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/step"
 	"github.com/crossplane/crossplane/v2/internal/xfn"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
@@ -77,10 +80,12 @@ type Reconciler struct {
 	pipeline  xfn.FunctionRunner
 	functions xfn.CapabilityChecker
 	resources xfn.RequiredResourcesFetcher
+	schemas   xfn.RequiredSchemasFetcher
 }
 
 // Reconcile an Operation by running its function pipeline.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) { //nolint:gocognit // Reconcilers are typically complex.
+	ctx = step.ForOperations(ctx)
 	log := r.log.WithValues("request", req)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -119,7 +124,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	limit := ptr.Deref(op.Spec.RetryLimit, DefaultRetryLimit)
 	if op.Status.Failures >= limit {
 		log.Debug("Operation failure limit reached. Not running again.", "limit", limit)
-		status.MarkConditions(xpv1.ReconcileSuccess(), v1alpha1.Failed(fmt.Sprintf("failure limit of %d reached", limit)))
+		status.MarkConditions(xpv2.ReconcileSuccess(), v1alpha1.Failed(fmt.Sprintf("failure limit of %d reached", limit)))
 
 		return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, op), "cannot update Operation status")
 	}
@@ -155,7 +160,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		log.Debug("Function capability check failed", "error", err, "failures", op.Status.Failures)
 		err = errors.Wrap(err, "function capability check failed")
 		r.record.Event(op, event.Warning(reasonInvalidPipeline, err))
-		status.MarkConditions(xpv1.ReconcileError(err), v1alpha1.MissingCapabilities(err.Error()))
+		status.MarkConditions(xpv2.ReconcileError(err), v1alpha1.MissingCapabilities(err.Error()))
 		_ = r.client.Status().Update(ctx, op)
 
 		return reconcile.Result{}, err
@@ -170,10 +175,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// The function context starts empty.
 	fctx := &structpb.Struct{Fields: map[string]*structpb.Value{}}
 
+	// Generate a trace ID for this pipeline execution. All steps in this
+	// reconciliation will share this trace ID for correlation.
+	traceID := uuid.NewString()
+
 	// Run any operation functions in the pipeline. Each function may mutate
 	// the desired state returned by the last, and each function may produce
 	// results that will be emitted as events.
-	for _, fn := range op.Spec.Pipeline {
+	for stepIndex, fn := range op.Spec.Pipeline {
 		log = log.WithValues("step", fn.Step)
 
 		req := &fnv1.RunFunctionRequest{Desired: d, Context: fctx}
@@ -185,7 +194,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 				// An unmarshalable input requires human intervention to fix, so
 				// we immediately fail this operation without retrying.
-				status.MarkConditions(xpv1.ReconcileSuccess(), v1alpha1.Failed(fmt.Sprintf("cannot unmarshal input for operation pipeline step %q", fn.Step)))
+				status.MarkConditions(xpv2.ReconcileSuccess(), v1alpha1.Failed(fmt.Sprintf("cannot unmarshal input for operation pipeline step %q", fn.Step)))
 				_ = r.client.Status().Update(ctx, op)
 
 				return reconcile.Result{}, errors.Wrapf(err, "cannot unmarshal input for operation pipeline step %q", fn.Step)
@@ -208,7 +217,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				log.Debug("Cannot get Operation pipeline step credential", "error", err, "failures", op.Status.Failures, "credential", cs.Name)
 				err = errors.Wrapf(err, "cannot get operation pipeline step %q credential %q from Secret", fn.Step, cs.Name)
 				r.record.Event(op, event.Warning(reasonFunctionInvocation, err))
-				status.MarkConditions(xpv1.ReconcileError(err))
+				status.MarkConditions(xpv2.ReconcileError(err))
 				_ = r.client.Status().Update(ctx, op)
 
 				return reconcile.Result{}, err
@@ -236,7 +245,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 					log.Debug("Cannot fetch bootstrap required resources", "error", err, "failures", op.Status.Failures, "requirement", sel.RequirementName)
 					err = errors.Wrapf(err, "cannot fetch bootstrap required resources for requirement %q", sel.RequirementName)
 					r.record.Event(op, event.Warning(reasonBootstrapRequirements, err))
-					status.MarkConditions(xpv1.ReconcileError(err))
+					status.MarkConditions(xpv2.ReconcileError(err))
 					_ = r.client.Status().Update(ctx, op)
 
 					return reconcile.Result{}, err
@@ -245,18 +254,39 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				// Add to request (resources could be nil if not found)
 				req.RequiredResources[sel.RequirementName] = resources
 			}
+
+			req.RequiredSchemas = map[string]*fnv1.Schema{}
+			for _, sel := range fn.Requirements.RequiredSchemas {
+				schema, err := r.schemas.Fetch(ctx, xfn.ToProtobufSchemaSelector(&sel))
+				if err != nil {
+					op.Status.Failures++
+
+					log.Debug("Cannot fetch bootstrap required schema", "error", err, "failures", op.Status.Failures, "requirement", sel.RequirementName)
+					err = errors.Wrapf(err, "cannot fetch bootstrap required schema for requirement %q", sel.RequirementName)
+					r.record.Event(op, event.Warning(reasonBootstrapRequirements, err))
+					status.MarkConditions(xpv2.ReconcileError(err))
+					_ = r.client.Status().Update(ctx, op)
+
+					return reconcile.Result{}, err
+				}
+
+				req.RequiredSchemas[sel.RequirementName] = schema
+			}
 		}
 
-		req.Meta = &fnv1.RequestMeta{Tag: xfn.Tag(req)}
+		req.Meta = &fnv1.RequestMeta{Tag: xfn.Tag(req), Capabilities: xfn.SupportedCapabilities()}
 
-		rsp, err := r.pipeline.RunFunction(ctx, fn.FunctionRef.Name, req)
+		// Add step metadata to context for use by downstream components like InspectedRunner.
+		stepCtx := step.ContextWithStepMetaForOperations(ctx, traceID, fn.Step, int32(stepIndex), op.GetName(), string(op.GetUID()))
+
+		rsp, err := r.pipeline.RunFunction(stepCtx, fn.FunctionRef.Name, req)
 		if err != nil {
 			op.Status.Failures++
 
 			log.Debug("Cannot run operation pipeline step", "error", err, "failures", op.Status.Failures)
 			err = errors.Wrapf(err, "failed to invoke pipeline step %q", fn.Step)
 			r.record.Event(op, event.Warning(reasonFunctionInvocation, err))
-			status.MarkConditions(xpv1.ReconcileError(err))
+			status.MarkConditions(xpv2.ReconcileError(err))
 			_ = r.client.Status().Update(ctx, op)
 
 			return reconcile.Result{}, err
@@ -277,9 +307,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				op.Status.Failures++
 
 				log.Debug("Pipeline step returned a fatal result", "error", rs.GetMessage(), "failures", op.Status.Failures)
-				err = errors.New(rs.GetMessage())
+				err = &xcomposite.PipelineFatalError{Step: fn.Step, Message: rs.GetMessage()}
 				r.record.Event(op, event.Warning(reasonFunctionInvocation, err))
-				status.MarkConditions(xpv1.ReconcileError(err))
+				status.MarkConditions(xpv2.ReconcileError(err))
 				_ = r.client.Status().Update(ctx, op)
 
 				return reconcile.Result{}, err
@@ -303,7 +333,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				log.Debug("Cannot marshal pipeline step output to JSON", "error", err, "failures", op.Status.Failures)
 				err = errors.Wrapf(err, "cannot marshal pipeline step %q output to JSON", fn.Step)
 				r.record.Event(op, event.Warning(reasonInvalidOutput, err))
-				status.MarkConditions(xpv1.ReconcileError(err))
+				status.MarkConditions(xpv2.ReconcileError(err))
 				_ = r.client.Status().Update(ctx, op)
 
 				return reconcile.Result{}, err
@@ -323,7 +353,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			log.Debug("Cannot load desired resource from protobuf struct", "error", err, "failures", op.Status.Failures, "resource-name", name)
 			err = errors.Wrapf(err, "cannot load desired resource %q from protobuf struct", name)
 			r.record.Event(op, event.Warning(reasonInvalidResource, err))
-			status.MarkConditions(xpv1.ReconcileError(err))
+			status.MarkConditions(xpv2.ReconcileError(err))
 			_ = r.client.Status().Update(ctx, op)
 
 			return reconcile.Result{}, err
@@ -333,13 +363,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		// always be operating on a resource some other controller owns.
 		// TODO(negz): Do we ever want to be an owner reference of these
 		// resources?
+		//
+		//nolint:staticcheck // TODO(adamwg): Stop using client.Apply after the v2.2 release.
 		if err := r.client.Patch(ctx, u, client.Apply, client.ForceOwnership, client.FieldOwner(FieldOwnerPrefix+op.GetUID())); err != nil {
 			op.Status.Failures++
 			log.Debug("Cannot apply desired resource", "error", err, "failures", op.Status.Failures, "resource-name", name)
 
 			err = errors.Wrap(err, "cannot apply desired resource")
 			r.record.Event(op, event.Warning(reasonInvalidResource, err))
-			status.MarkConditions(xpv1.ReconcileError(err))
+			status.MarkConditions(xpv2.ReconcileError(err))
 			_ = r.client.Status().Update(ctx, op)
 
 			return reconcile.Result{}, err
@@ -352,7 +384,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		op.Status.AppliedResourceRefs = AddResourceRef(op.Status.AppliedResourceRefs, u)
 	}
 
-	status.MarkConditions(xpv1.ReconcileSuccess(), v1alpha1.Complete())
+	status.MarkConditions(xpv2.ReconcileSuccess(), v1alpha1.Complete())
 
 	return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, op), "cannot update Operation status")
 }
@@ -367,7 +399,7 @@ func AddResourceRef(refs []v1alpha1.AppliedResourceRef, u *kunstructured.Unstruc
 		Name:       u.GetName(),
 	}
 	if u.GetNamespace() != "" {
-		ref.Namespace = ptr.To(u.GetNamespace())
+		ref.Namespace = new(u.GetNamespace())
 	}
 
 	// Don't add the new ref if it's already there.

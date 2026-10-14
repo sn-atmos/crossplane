@@ -31,14 +31,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	"github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	"github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	"github.com/crossplane/crossplane/v2/internal/ops/lifecycle"
 )
 
@@ -106,7 +106,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 		watched.SetName(req.Name)
 		watched.SetNamespace(req.Namespace)
-		watched.SetDeletionTimestamp(ptr.To(metav1.Now()))
+		watched.SetDeletionTimestamp(new(metav1.Now()))
 		watched.SetResourceVersion(v1alpha1.SyntheticResourceVersionDeleted)
 	}
 
@@ -231,12 +231,12 @@ func NewOperation(wo *v1alpha1.WatchOperation, watched *unstructured.Unstructure
 		RequirementName: v1alpha1.RequirementNameWatchedResource,
 		APIVersion:      watched.GetAPIVersion(),
 		Kind:            watched.GetKind(),
-		Name:            ptr.To(watched.GetName()),
+		Name:            new(watched.GetName()),
 	}
 
 	// Add namespace if the resource is namespaced
 	if watched.GetNamespace() != "" {
-		sel.Namespace = ptr.To(watched.GetNamespace())
+		sel.Namespace = new(watched.GetNamespace())
 	}
 
 	// Inject the watched resource into each pipeline step
@@ -274,7 +274,7 @@ func NewOperation(wo *v1alpha1.WatchOperation, watched *unstructured.Unstructure
 	meta.AddAnnotations(op, annotations)
 
 	av, k := v1alpha1.WatchOperationGroupVersionKind.ToAPIVersionAndKind()
-	meta.AddOwnerReference(op, meta.AsController(&xpv1.TypedReference{
+	meta.AddOwnerReference(op, meta.AsController(&xpv2.TypedReference{
 		APIVersion: av,
 		Kind:       k,
 		Name:       wo.GetName(),

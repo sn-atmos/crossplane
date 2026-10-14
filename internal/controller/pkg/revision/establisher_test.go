@@ -34,13 +34,13 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
-	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	v1 "github.com/crossplane/crossplane/apis/v2/pkg/v1"
 )
 
 var _ Establisher = &APIEstablisher{}
@@ -59,7 +59,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 
 	type want struct {
 		err  error
-		refs []xpv1.TypedReference
+		refs []xpv2.TypedReference
 	}
 
 	cases := map[string]struct {
@@ -112,7 +112,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: true,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{{Name: "ref-me"}},
+				refs: []xpv2.TypedReference{{Name: "ref-me"}},
 			},
 		},
 		"SuccessfulNotExistsEstablishControl": {
@@ -160,7 +160,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: true,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{{Name: "ref-me"}},
+				refs: []xpv2.TypedReference{{Name: "ref-me"}},
 			},
 		},
 		"SuccessfulNotExistsEstablishControlWebhookEnabledActiveRevision": {
@@ -238,7 +238,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: true,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{
+				refs: []xpv2.TypedReference{
 					{Name: "ref-me"},
 					{Name: "crossplane-provider-provider-name"},
 					{Name: "crossplane-provider-provider-name"},
@@ -263,7 +263,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: false,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{{Name: "ref-me"}},
+				refs: []xpv2.TypedReference{{Name: "ref-me"}},
 			},
 		},
 		"SuccessfulNotExistsDoNotCreate": {
@@ -284,7 +284,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: false,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{{Name: "ref-me"}},
+				refs: []xpv2.TypedReference{{Name: "ref-me"}},
 			},
 		},
 		"FailedTLSSecretNotPresent": {
@@ -598,7 +598,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: true,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{
+				refs: []xpv2.TypedReference{
 					{Name: "test-mrd-unset"},
 					{Name: "test-mrd-active"},
 					{Name: "test-mrd-inactive"},
@@ -801,7 +801,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				control: true,
 			},
 			want: want{
-				refs: []xpv1.TypedReference{
+				refs: []xpv2.TypedReference{
 					{Name: "active-to-unset"},
 					{Name: "active-to-active"},
 					{Name: "active-to-inactive"},
@@ -820,7 +820,7 @@ func TestAPIEstablisherEstablish(t *testing.T) {
 				t.Errorf("\n%s\ne.Check(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
-			sort := cmpopts.SortSlices(func(x, y xpv1.TypedReference) bool {
+			sort := cmpopts.SortSlices(func(x, y xpv2.TypedReference) bool {
 				return x.Name < y.Name
 			})
 			if diff := cmp.Diff(tc.want.refs, refs, test.EquateErrors(), sort, cmpopts.EquateEmpty()); diff != "" {
@@ -863,7 +863,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -892,7 +892,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -941,7 +941,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -1012,7 +1012,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -1073,7 +1073,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -1131,7 +1131,7 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 					},
 					Status: v1.ProviderRevisionStatus{
 						PackageRevisionStatus: v1.PackageRevisionStatus{
-							ObjectRefs: []xpv1.TypedReference{
+							ObjectRefs: []xpv2.TypedReference{
 								{
 									APIVersion: "apiextensions.k8s.io/v1",
 									Kind:       "CustomResourceDefinition",
@@ -1153,6 +1153,299 @@ func TestAPIEstablisherReleaseObjects(t *testing.T) {
 			err := tc.args.est.ReleaseObjects(context.TODO(), tc.args.parent)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Check(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestAPIEstablisherDemoteOldController(t *testing.T) {
+	errBoom := errors.New("boom")
+
+	prAPIVersion := v1.ProviderRevisionGroupVersionKind.GroupVersion().String()
+
+	// The revision that wants to take control.
+	newParent := func() *v1.ProviderRevision {
+		pr := &v1.ProviderRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "cool-package-b",
+				UID:    "uid-b",
+				Labels: map[string]string{v1.LabelParentPackage: "cool-package"},
+			},
+		}
+		pr.SetGroupVersionKind(v1.ProviderRevisionGroupVersionKind)
+
+		return pr
+	}
+
+	// The controlling owner reference newParent() wants.
+	want := metav1.OwnerReference{
+		APIVersion:         prAPIVersion,
+		Kind:               v1.ProviderRevisionGroupVersionKind.Kind,
+		Name:               "cool-package-b",
+		UID:                "uid-b",
+		Controller:         new(true),
+		BlockOwnerDeletion: new(true),
+	}
+
+	// A controlling owner reference held by the revision we're replacing.
+	outgoing := metav1.OwnerReference{
+		APIVersion:         prAPIVersion,
+		Kind:               v1.ProviderRevisionGroupVersionKind.Kind,
+		Name:               "cool-package-a",
+		UID:                "uid-a",
+		Controller:         new(true),
+		BlockOwnerDeletion: new(true),
+	}
+
+	// The parent package's owner reference, which every established object
+	// carries alongside the revision's, and which we must never touch.
+	pkgOwner := metav1.OwnerReference{
+		APIVersion:         v1.ProviderGroupVersionKind.GroupVersion().String(),
+		Kind:               v1.ProviderGroupVersionKind.Kind,
+		Name:               "cool-package",
+		UID:                "uid-pkg",
+		Controller:         new(false),
+		BlockOwnerDeletion: new(true),
+	}
+
+	// The same reference, as an older version of Crossplane would have written
+	// it, through the API version it served our type at back then.
+	outgoingOldAPIVersion := func() metav1.OwnerReference {
+		r := outgoing
+		r.APIVersion = "pkg.crossplane.io/v1beta1"
+
+		return r
+	}()
+
+	// The same reference, demoted to a plain owner.
+	released := func() metav1.OwnerReference {
+		r := outgoing
+		r.Controller = new(false)
+
+		return r
+	}()
+
+	// The older-API-version reference, demoted to a plain owner.
+	releasedOldAPIVersion := func() metav1.OwnerReference {
+		r := outgoingOldAPIVersion
+		r.Controller = new(false)
+
+		return r
+	}()
+
+	// Returns a revision with the supplied UID, package label, and desired state.
+	revision := func(uid types.UID, pkg string, state v1.PackageRevisionDesiredState) func(context.Context, client.ObjectKey, client.Object) error {
+		return func(_ context.Context, key client.ObjectKey, obj client.Object) error {
+			pr, ok := obj.(*v1.ProviderRevision)
+			if !ok {
+				t.Errorf("want *v1.ProviderRevision, got %T", obj)
+				return nil
+			}
+
+			pr.SetName(key.Name)
+			pr.SetUID(uid)
+			pr.SetLabels(map[string]string{v1.LabelParentPackage: pkg})
+			pr.SetDesiredState(state)
+
+			return nil
+		}
+	}
+
+	type args struct {
+		client client.Client
+		obj    resource.Object
+		parent resource.Object
+	}
+
+	type wantT struct {
+		err  error
+		refs []metav1.OwnerReference
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   wantT
+	}{
+		"NoController": {
+			reason: "An object with no controller should be left alone, so we can simply become its controller.",
+			args: args{
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{released},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{released}},
+		},
+		"AlreadyOurs": {
+			reason: "An object we already control should be left alone.",
+			args: args{
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{want},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{want}},
+		},
+		"ControlledByAnotherKind": {
+			reason: "We should not take control from a controller that isn't a revision of our kind.",
+			args: args{
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: prAPIVersion,
+						Kind:       "Provider",
+						Name:       "cool-package",
+						UID:        "uid-pkg",
+						Controller: new(true),
+					}},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{{
+				APIVersion: prAPIVersion,
+				Kind:       "Provider",
+				Name:       "cool-package",
+				UID:        "uid-pkg",
+				Controller: new(true),
+			}}},
+		},
+		"ControlledByAnotherAPIVersionOfOurKind": {
+			reason: "We should take control from a revision of our own group and kind whose owner reference was written through another API version, since the API server may serve our type at more than one.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a", "cool-package", v1.PackageRevisionInactive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoingOldAPIVersion},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{releasedOldAPIVersion}},
+		},
+		"ControlledByAnotherGroup": {
+			reason: "We should not take control from a controller of another group, even if it shares our kind.",
+			args: args{
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "pkg.example.org/v1",
+						Kind:       v1.ProviderRevisionGroupVersionKind.Kind,
+						Name:       "cool-package-a",
+						UID:        "uid-a",
+						Controller: new(true),
+					}},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{{
+				APIVersion: "pkg.example.org/v1",
+				Kind:       v1.ProviderRevisionGroupVersionKind.Kind,
+				Name:       "cool-package-a",
+				UID:        "uid-a",
+				Controller: new(true),
+			}}},
+		},
+		"OtherOwnersAreLeftAlone": {
+			reason: "We should demote only the controller we're taking over from, leaving the parent package's owner reference untouched and in place.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a", "cool-package", v1.PackageRevisionInactive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{pkgOwner, outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{pkgOwner, released}},
+		},
+		"ControlledByInactiveRevisionOfSamePackage": {
+			reason: "We should take control from an inactive revision of our package, e.g. one that hasn't relinquished control yet.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a", "cool-package", v1.PackageRevisionInactive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{released}},
+		},
+		"ControlledByDeletedRevision": {
+			reason: "We should take control from a revision that no longer exists, since it can never relinquish it.",
+			args: args{
+				client: &test.MockClient{MockGet: test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, "cool-package-a"))},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{released}},
+		},
+		"ControlledByActiveRevisionOfSamePackage": {
+			reason: "We should not take control from a revision of our package that is still active, so that a stale reconcile can't take control back from the revision that replaced it.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a", "cool-package", v1.PackageRevisionActive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{outgoing}},
+		},
+		"ControlledByReplacedRevision": {
+			reason: "We should take control from a revision that was replaced by one with the same name, as happens when Crossplane is upgraded, whatever state the replacement is in.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a-new", "cool-package", v1.PackageRevisionActive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{released}},
+		},
+		"ControlledByRevisionOfAnotherPackage": {
+			reason: "We should not take control from a revision of a different package.",
+			args: args{
+				client: &test.MockClient{MockGet: revision("uid-a", "uncool-package", v1.PackageRevisionInactive)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{refs: []metav1.OwnerReference{outgoing}},
+		},
+		"ParentHasNoPackageLabel": {
+			reason: "We should not take control if we can't tell which package we belong to.",
+			args: args{
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: &v1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "cool-package-b", UID: "uid-b"}},
+			},
+			want: wantT{refs: []metav1.OwnerReference{outgoing}},
+		},
+		"GetControllingRevisionError": {
+			reason: "We should return an error if we can't tell whether the controlling revision is one of ours.",
+			args: args{
+				client: &test.MockClient{MockGet: test.NewMockGetFn(errBoom)},
+				obj: &extv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{outgoing},
+				}},
+				parent: newParent(),
+			},
+			want: wantT{
+				err:  errors.Wrapf(errBoom, errFmtGetControllingRevision, v1.ProviderRevisionGroupVersionKind.Kind, "cool-package-a"),
+				refs: []metav1.OwnerReference{outgoing},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newAPIEstablisher(tc.args.client)
+
+			err := e.demoteOldController(context.TODO(), tc.args.obj, tc.args.parent, want)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\ne.demoteOldController(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			if diff := cmp.Diff(tc.want.refs, tc.args.obj.GetOwnerReferences()); diff != "" {
+				t.Errorf("\n%s\ne.demoteOldController(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}
@@ -1224,9 +1517,394 @@ func TestGetPackageOwnerReference(t *testing.T) {
 	}
 }
 
+func TestAddLabels(t *testing.T) {
+	type args struct {
+		objs   []runtime.Object
+		parent v1.PackageRevision
+	}
+
+	type want struct {
+		labels map[string]string
+		err    error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NoCommonLabels": {
+			reason: "Objects should not be modified when no common labels are set.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{Name: "mrd-a"},
+					},
+				},
+				parent: &v1.ProviderRevision{},
+			},
+			want: want{
+				labels: nil,
+			},
+		},
+		"SetsLabelsOnObjectWithoutLabels": {
+			reason: "Common labels should be set on an object that has no existing labels.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{Name: "mrd-a"},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonLabels: map[string]string{"env": "prod"},
+						},
+					},
+				},
+			},
+			want: want{
+				labels: map[string]string{"env": "prod"},
+			},
+		},
+		"MergesLabelsOnObjectWithExistingLabels": {
+			reason: "Common labels should be merged with existing labels on an object.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "mrd-a",
+							Labels: map[string]string{"existing": "value"},
+						},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonLabels: map[string]string{"env": "prod"},
+						},
+					},
+				},
+			},
+			want: want{
+				labels: map[string]string{"existing": "value", "env": "prod"},
+			},
+		},
+		"OverwritesExistingLabelWithCommonLabel": {
+			reason: "A common label should overwrite an existing label with the same key.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "mrd-a",
+							Labels: map[string]string{"env": "staging"},
+						},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonLabels: map[string]string{"env": "prod"},
+						},
+					},
+				},
+			},
+			want: want{
+				labels: map[string]string{"env": "prod"},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newAPIEstablisher(nil)
+			err := e.addLabels(tc.args.objs, tc.args.parent)
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\naddLabels(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if err != nil {
+				return
+			}
+			obj := tc.args.objs[0].(metav1.Object)
+			if diff := cmp.Diff(tc.want.labels, obj.GetLabels()); diff != "" {
+				t.Errorf("\n%s\naddLabels(...): -want labels, +got labels:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestAddAnnotations(t *testing.T) {
+	type args struct {
+		objs   []runtime.Object
+		parent v1.PackageRevision
+	}
+
+	type want struct {
+		annotations map[string]string
+		err         error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"NoCommonAnnotations": {
+			reason: "Objects should not be modified when no common annotations are set.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{Name: "mrd-a"},
+					},
+				},
+				parent: &v1.ProviderRevision{},
+			},
+			want: want{
+				annotations: nil,
+			},
+		},
+		"SetsAnnotationsOnObjectWithoutAnnotations": {
+			reason: "Common annotations should be set on an object that has no existing annotations.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{Name: "mrd-a"},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonAnnotations: map[string]string{"owner": "team-a"},
+						},
+					},
+				},
+			},
+			want: want{
+				annotations: map[string]string{"owner": "team-a"},
+			},
+		},
+		"MergesAnnotationsOnObjectWithExistingAnnotations": {
+			reason: "Common annotations should be merged with existing annotations on an object.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        "mrd-a",
+							Annotations: map[string]string{"existing": "value"},
+						},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonAnnotations: map[string]string{"owner": "team-a"},
+						},
+					},
+				},
+			},
+			want: want{
+				annotations: map[string]string{"existing": "value", "owner": "team-a"},
+			},
+		},
+		"OverwritesExistingAnnotationWithCommonAnnotation": {
+			reason: "A common annotation should overwrite an existing annotation with the same key.",
+			args: args{
+				objs: []runtime.Object{
+					&v1alpha1.ManagedResourceDefinition{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:        "mrd-a",
+							Annotations: map[string]string{"owner": "team-b"},
+						},
+					},
+				},
+				parent: &v1.ProviderRevision{
+					Spec: v1.ProviderRevisionSpec{
+						PackageRevisionSpec: v1.PackageRevisionSpec{
+							CommonAnnotations: map[string]string{"owner": "team-a"},
+						},
+					},
+				},
+			},
+			want: want{
+				annotations: map[string]string{"owner": "team-a"},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newAPIEstablisher(nil)
+			err := e.addAnnotations(tc.args.objs, tc.args.parent)
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\naddAnnotations(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+			if err != nil {
+				return
+			}
+			obj := tc.args.objs[0].(metav1.Object)
+			if diff := cmp.Diff(tc.want.annotations, obj.GetAnnotations()); diff != "" {
+				t.Errorf("\n%s\naddAnnotations(...): -want annotations, +got annotations:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
 func newAPIEstablisher(client client.Client) *APIEstablisher {
 	return &APIEstablisher{
 		client:                           client,
+		newPackageRevision:               func() v1.PackageRevision { return &v1.ProviderRevision{} },
 		MaxConcurrentPackageEstablishers: 10, // Use the current default
+	}
+}
+
+func TestFilteringEstablisherEstablish(t *testing.T) {
+	errBoom := errors.New("boom")
+
+	crd := &extv1.CustomResourceDefinition{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: extv1.SchemeGroupVersion.String(),
+			Kind:       "CustomResourceDefinition",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-crd",
+		},
+	}
+
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-sa",
+		},
+	}
+
+	type args struct {
+		wrap Establisher
+		gks  []schema.GroupKind
+		objs []runtime.Object
+	}
+
+	type want struct {
+		refs []xpv2.TypedReference
+		err  error
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   want
+	}{
+		"FilterPartialMatch": {
+			reason: "Should only pass objects matching the filter to the wrapped establisher",
+			args: args{
+				wrap: &MockEstablisher{
+					MockEstablish: func(_ context.Context, objects []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
+						if diff := cmp.Diff([]runtime.Object{crd}, objects); diff != "" {
+							t.Errorf("\n%s\nMockEstablish(...): -want error, +got error:\n%s", "incorrect objects passed to wrapped establisher", diff)
+							return nil, errBoom
+						}
+
+						return []xpv2.TypedReference{{Name: "test-crd"}}, nil
+					},
+				},
+				gks:  []schema.GroupKind{crd.GroupVersionKind().GroupKind()},
+				objs: []runtime.Object{crd, sa},
+			},
+			want: want{
+				refs: []xpv2.TypedReference{{Name: "test-crd"}},
+			},
+		},
+		"FilterFullMatch": {
+			reason: "Should pass all objects matching any of the filters to the wrapped establisher",
+			args: args{
+				wrap: &MockEstablisher{
+					MockEstablish: func(_ context.Context, objects []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
+						if diff := cmp.Diff([]runtime.Object{crd, sa}, objects); diff != "" {
+							t.Errorf("\n%s\nMockEstablish(...): -want error, +got error:\n%s", "incorrect objects passed to wrapped establisher", diff)
+							return nil, errBoom
+						}
+
+						return []xpv2.TypedReference{{Name: "test-crd"}, {Name: "test-sa"}}, nil
+					},
+				},
+				gks:  []schema.GroupKind{crd.GroupVersionKind().GroupKind(), sa.GroupVersionKind().GroupKind()},
+				objs: []runtime.Object{crd, sa},
+			},
+			want: want{
+				refs: []xpv2.TypedReference{{Name: "test-crd"}, {Name: "test-sa"}},
+			},
+		},
+		"FilterNoMatches": {
+			reason: "Should pass no objects to the wrapped establisher if none match the filter",
+			args: args{
+				wrap: &MockEstablisher{
+					MockEstablish: func(_ context.Context, objects []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
+						if diff := cmp.Diff([]runtime.Object{}, objects); diff != "" {
+							t.Errorf("\n%s\nMockEstablish(...): -want error, +got error:\n%s", "incorrect objects passed to wrapped establisher", diff)
+							return nil, errBoom
+						}
+
+						return []xpv2.TypedReference{}, nil
+					},
+				},
+				gks:  []schema.GroupKind{{Group: "example.com", Kind: "CustomKind"}},
+				objs: []runtime.Object{crd, sa},
+			},
+			want: want{
+				refs: []xpv2.TypedReference{},
+			},
+		},
+		"FilterEmpty": {
+			reason: "Should pass no objects to the wrapped establisher if empty filter is specified",
+			args: args{
+				wrap: &MockEstablisher{
+					MockEstablish: func(_ context.Context, objects []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
+						if diff := cmp.Diff([]runtime.Object{}, objects); diff != "" {
+							t.Errorf("\n%s\nMockEstablish(...): -want error, +got error:\n%s", "incorrect objects passed to wrapped establisher", diff)
+							return nil, errBoom
+						}
+
+						return []xpv2.TypedReference{}, nil
+					},
+				},
+				gks:  []schema.GroupKind{},
+				objs: []runtime.Object{crd, sa},
+			},
+			want: want{
+				refs: []xpv2.TypedReference{},
+			},
+		},
+		"ErrorFromWrappedEstablisher": {
+			reason: "Should propagate errors from the wrapped establisher",
+			args: args{
+				wrap: &MockEstablisher{
+					MockEstablish: func(_ context.Context, _ []runtime.Object, _ v1.PackageRevision, _ bool) ([]xpv2.TypedReference, error) {
+						return nil, errBoom
+					},
+				},
+				gks:  []schema.GroupKind{crd.GroupVersionKind().GroupKind()},
+				objs: []runtime.Object{crd},
+			},
+			want: want{
+				err: errBoom,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			est := NewFilteringEstablisher(tc.args.wrap, tc.args.gks...)
+			refs, err := est.Establish(context.Background(), tc.args.objs, &v1.ProviderRevision{}, true)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nest.Establish(...): -want error, +got error:\n%s", tc.reason, diff)
+			}
+
+			if diff := cmp.Diff(tc.want.refs, refs); diff != "" {
+				t.Errorf("\n%s\nest.Establish(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
 	}
 }

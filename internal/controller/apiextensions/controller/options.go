@@ -37,6 +37,10 @@ type Options struct {
 	// FunctionRunner used to run Composition Functions.
 	FunctionRunner xfn.FunctionRunner
 
+	// OpenAPIClient used to fetch OpenAPI schemas for bootstrap requirements
+	// specified in Compositions.
+	OpenAPIClient xfn.OpenAPIV3Client
+
 	// CircuitBreakerMetrics records XR circuit breaker activity.
 	CircuitBreakerMetrics *circuit.PrometheusMetrics
 
@@ -48,4 +52,8 @@ type Options struct {
 
 	// CircuitBreakerCooldown is how long XR circuit breakers stay open after triggering.
 	CircuitBreakerCooldown time.Duration
+
+	// MinPollInterval is the shortest per-resource poll interval allowed
+	// via the crossplane.io/poll-interval annotation.
+	MinPollInterval time.Duration
 }

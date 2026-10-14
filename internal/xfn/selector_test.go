@@ -21,10 +21,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"google.golang.org/protobuf/testing/protocmp"
-	"k8s.io/utils/ptr"
 
-	apiextensionsv1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
-	opsv1alpha1 "github.com/crossplane/crossplane/v2/apis/ops/v1alpha1"
+	apiextensionsv1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	opsv1alpha1 "github.com/crossplane/crossplane/apis/v2/ops/v1alpha1"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
@@ -86,7 +85,7 @@ func TestToProtobufResourceSelector(t *testing.T) {
 					RequirementName: "test-req",
 					APIVersion:      "v1",
 					Kind:            "ConfigMap",
-					Name:            ptr.To("test-configmap"),
+					Name:            new("test-configmap"),
 				},
 			},
 			want: want{
@@ -106,7 +105,7 @@ func TestToProtobufResourceSelector(t *testing.T) {
 					RequirementName: "test-req",
 					APIVersion:      "v1",
 					Kind:            "Secret",
-					Name:            ptr.To("test-secret"),
+					Name:            new("test-secret"),
 				},
 			},
 			want: want{
@@ -176,15 +175,15 @@ func TestToProtobufResourceSelector(t *testing.T) {
 					RequirementName: "test-req",
 					APIVersion:      "v1",
 					Kind:            "ConfigMap",
-					Namespace:       ptr.To("test-namespace"),
-					Name:            ptr.To("test-name"),
+					Namespace:       new("test-namespace"),
+					Name:            new("test-name"),
 				},
 			},
 			want: want{
 				result: &fnv1.ResourceSelector{
 					ApiVersion: "v1",
 					Kind:       "ConfigMap",
-					Namespace:  ptr.To("test-namespace"),
+					Namespace:  new("test-namespace"),
 					Match: &fnv1.ResourceSelector_MatchName{
 						MatchName: "test-name",
 					},
@@ -198,15 +197,15 @@ func TestToProtobufResourceSelector(t *testing.T) {
 					RequirementName: "test-req",
 					APIVersion:      "v1",
 					Kind:            "Secret",
-					Name:            ptr.To("my-secret"),
-					Namespace:       ptr.To("kube-system"),
+					Name:            new("my-secret"),
+					Namespace:       new("kube-system"),
 				},
 			},
 			want: want{
 				result: &fnv1.ResourceSelector{
 					ApiVersion: "v1",
 					Kind:       "Secret",
-					Namespace:  ptr.To("kube-system"),
+					Namespace:  new("kube-system"),
 					Match: &fnv1.ResourceSelector_MatchName{
 						MatchName: "my-secret",
 					},
@@ -223,20 +222,40 @@ func TestToProtobufResourceSelector(t *testing.T) {
 					MatchLabels: map[string]string{
 						"tier": "frontend",
 					},
-					Namespace: ptr.To("production"),
+					Namespace: new("production"),
 				},
 			},
 			want: want{
 				result: &fnv1.ResourceSelector{
 					ApiVersion: "apps/v1",
 					Kind:       "Deployment",
-					Namespace:  ptr.To("production"),
+					Namespace:  new("production"),
 					Match: &fnv1.ResourceSelector_MatchLabels{
 						MatchLabels: &fnv1.MatchLabels{
 							Labels: map[string]string{
 								"tier": "frontend",
 							},
 						},
+					},
+				},
+			},
+		},
+		"OperationSelectorWithEmptyLabels": {
+			reason: "Empty matchLabels should select all resources of the kind, similar to kubectl get --selector",
+			args: args{
+				selector: &apiextensionsv1.RequiredResourceSelector{
+					RequirementName: "test-req",
+					APIVersion:      "v1",
+					Kind:            "ConfigMap",
+					MatchLabels:     map[string]string{},
+				},
+			},
+			want: want{
+				result: &fnv1.ResourceSelector{
+					ApiVersion: "v1",
+					Kind:       "ConfigMap",
+					Match: &fnv1.ResourceSelector_MatchLabels{
+						MatchLabels: &fnv1.MatchLabels{},
 					},
 				},
 			},

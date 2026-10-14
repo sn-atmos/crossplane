@@ -18,12 +18,13 @@ package composition
 
 import (
 	"fmt"
+	"maps"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
 )
 
 // NewCompositionRevision creates a new revision of the supplied Composition.
@@ -54,8 +55,10 @@ func NewCompositionRevision(c *v1.Composition, revision int64) *v1.CompositionRe
 	ref := meta.TypedReferenceTo(c, v1.CompositionGroupVersionKind)
 	meta.AddOwnerReference(cr, meta.AsController(ref))
 
-	for k, v := range c.GetLabels() {
-		cr.Labels[k] = v
+	maps.Copy(cr.Labels, c.GetLabels())
+
+	if annotations := c.GetAnnotations(); len(annotations) > 0 {
+		cr.SetAnnotations(maps.Clone(annotations))
 	}
 
 	return cr

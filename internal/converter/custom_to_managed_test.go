@@ -29,7 +29,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
 )
 
 // invalidJSONObject is a runtime.Object that fails to marshal to JSON.
@@ -188,6 +188,26 @@ func TestCustomToManagedResourceDefinitions(t *testing.T) {
 					"kind":     "ProviderConfigUsage",
 					"plural":   "providerconfigusages",
 					"singular": "providerconfigusage",
+				},
+				"scope": "Cluster",
+			},
+		},
+	}
+
+	// Test ClusterProviderConfigUsage CRD (should not be converted to MRD)
+	testClusterProviderConfigUsageCRD := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": extv1.SchemeGroupVersion.String(),
+			"kind":       customResourceDefinition,
+			"metadata": map[string]any{
+				"name": "clusterproviderconfigusages.aws.m.upbound.io",
+			},
+			"spec": map[string]any{
+				"group": "aws.m.upbound.io",
+				"names": map[string]any{
+					"kind":     "ClusterProviderConfigUsage",
+					"plural":   "clusterproviderconfigusages",
+					"singular": "clusterproviderconfigusage",
 				},
 				"scope": "Cluster",
 			},
@@ -470,6 +490,16 @@ func TestCustomToManagedResourceDefinitions(t *testing.T) {
 			},
 			want: want{
 				objects: []runtime.Object{testProviderConfigUsageCRD},
+			},
+		},
+		"ClusterProviderConfigUsageCRD": {
+			reason: "Should not convert ClusterProviderConfigUsage CRD to MRD",
+			args: args{
+				defaultActive: false,
+				objects:       []runtime.Object{testClusterProviderConfigUsageCRD},
+			},
+			want: want{
+				objects: []runtime.Object{testClusterProviderConfigUsageCRD},
 			},
 		},
 		"MixedWithProviderConfigCRDs": {

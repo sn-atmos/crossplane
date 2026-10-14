@@ -19,19 +19,20 @@ package claim
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	"github.com/crossplane/crossplane/v2/internal/names"
-	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 // Error strings.
@@ -116,26 +117,38 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	}
 
 	// We want to propagate the claim's spec to the composite's spec, but first
-	// we must filter out any well-known fields that are unique to claims. We do
-	// this by:
-	// 1. Grabbing a map whose keys represent all well-known claim fields.
-	// 2. Deleting any well-known fields that we want to propagate.
-	// 3. Using the resulting map keys to filter the claim's spec.
-	wellKnownClaimFields := xcrd.CompositeResourceClaimSpecProps(nil)
+	// we must filter out fields that must not be copied from a claim. We strip
+	// two sets of well-known fields:
+	//
+	//  1. Fields that are unique to claims (e.g. resourceRef), which are
+	//     meaningless on an XR.
+	//  2. XR machinery fields (e.g. resourceRefs and the crossplane stanza)
+	//     that only the XR controller may set. These are not part of a claim's
+	//     API, but a claim whose XRD schema sets
+	//     x-kubernetes-preserve-unknown-fields: true can smuggle them past CRD
+	//     validation. Propagating them would let a claim author inject e.g.
+	//     spec.resourceRefs into the XR, which the XR controller would then act
+	//     on - deleting composed resources or adopting arbitrary ones.
+	//
+	// We do this by building a map whose keys are all of those well-known
+	// fields, deleting the ones we do want to propagate (PropagateSpecProps,
+	// e.g. compositionRef), then using the resulting keys to filter the spec.
+	fieldsToStrip := xcrd.CompositeResourceClaimSpecProps(nil)
+	maps.Copy(fieldsToStrip, xcrd.CompositeResourceSpecProps(v1.CompositeResourceScopeLegacyCluster, nil))
 
 	for _, field := range xcrd.PropagateSpecProps {
 		// Skip propagating compositionRef if enforcedCompositionRef is set
 		if field == "compositionRef" && hasEnforcedComposition {
 			continue
 		}
-		delete(wellKnownClaimFields, field)
+		delete(fieldsToStrip, field)
 	}
 
 	// Propagate composition revision ref from the claim if the update policy is
 	// manual. When the update policy is manual the claim controller is
 	// authoritative for this field. See below for the automatic case.
-	if xr.GetCompositionUpdatePolicy() != nil && *xr.GetCompositionUpdatePolicy() == xpv1.UpdateManual {
-		delete(wellKnownClaimFields, xcrd.CompositionRevisionRef)
+	if xr.GetCompositionUpdatePolicy() != nil && *xr.GetCompositionUpdatePolicy() == xpv2.UpdateManual {
+		delete(fieldsToStrip, xcrd.CompositionRevisionRef)
 	}
 
 	cmSpec, ok := cm.Object["spec"].(map[string]any)
@@ -143,8 +156,8 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 		return errors.New(errUnsupportedClaimSpec)
 	}
 
-	// Propagate the claim's spec (minus well known fields) to the XR's spec.
-	xrPatch.Object["spec"] = withoutKeys(cmSpec, xcrd.GetPropFields(wellKnownClaimFields)...)
+	// Propagate the claim's spec (minus the filtered fields) to the XR's spec.
+	xrPatch.Object["spec"] = withoutKeys(cmSpec, xcrd.GetPropFields(fieldsToStrip)...)
 
 	// We overwrite the entire XR spec above, so we wait until this point to set
 	// the claim reference.
@@ -169,14 +182,15 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	}
 
 	// Propagate composition ref from the XR if the claim doesn't have an
-	// opinion. Composition and revision selectors only propagate from claim ->
-	// XR. When a claim has selectors **and no reference** the flow should be:
+	// opinion. Composition refs and revision selectors may propagate XR -> claim;
+	// composition selectors propagate claim -> XR. When a claim has selectors
+	// **and no reference** the flow should be:
 	//
 	// 1. Claim controller propagates selectors claim -> XR.
 	// 2. XR controller uses selectors to set XR's composition ref.
 	// 3. Claim controller propagates ref XR -> claim.
 	//
-	// When a claim sets a composition ref, it supercedes selectors. It should
+	// When a claim sets a composition ref, it supersedes selectors. It should
 	// only be propagated claim -> XR.
 	//
 	// EXCEPTION: When enforcedCompositionRef is set, we ALWAYS propagate
@@ -186,11 +200,15 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 		cm.SetCompositionReference(ref)
 	}
 
+	if ref := xr.GetCompositionRevisionSelector(); ref != nil && cm.GetCompositionRevisionSelector() == nil {
+		cm.SetCompositionRevisionSelector(ref)
+	}
+
 	// Propagate composition revision ref from the XR if the update policy is
 	// automatic. When the update policy is automatic the XR controller is
 	// authoritative for this field. It will update the XR's ref as new
-	// revisions become available, and we want to propgate the ref XR -> claim.
-	if p := xr.GetCompositionUpdatePolicy(); p != nil && *p == xpv1.UpdateAutomatic && xr.GetCompositionRevisionReference() != nil {
+	// revisions become available, and we want to propagate the ref XR -> claim.
+	if p := xr.GetCompositionUpdatePolicy(); p != nil && *p == xpv2.UpdateAutomatic && xr.GetCompositionRevisionReference() != nil {
 		cm.SetCompositionRevisionReference(xr.GetCompositionRevisionReference())
 	}
 
@@ -206,6 +224,7 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 		return errors.Wrap(err, errUpdateClaim)
 	}
 
+	//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 	if err := s.client.Patch(ctx, xrPatch, client.Apply, client.ForceOwnership, client.FieldOwner(FieldOwnerXR)); err != nil {
 		return errors.Wrap(err, errApplyComposite)
 	}
@@ -228,7 +247,7 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	}
 
 	// Preserve Crossplane machinery, like status conditions.
-	cmcs := xpv1.ConditionedStatus{}
+	cmcs := xpv2.ConditionedStatus{}
 	_ = fieldpath.Pave(cm.Object).GetValueInto("status", &cmcs)
 	pub := cm.GetConnectionDetailsLastPublishedTime()
 

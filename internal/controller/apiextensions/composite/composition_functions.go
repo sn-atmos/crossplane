@@ -23,16 +23,15 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
@@ -40,12 +39,14 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/dependency"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composite/step"
 	"github.com/crossplane/crossplane/v2/internal/names"
 	"github.com/crossplane/crossplane/v2/internal/ssa"
-	"github.com/crossplane/crossplane/v2/internal/xcrd"
-	"github.com/crossplane/crossplane/v2/internal/xerrors"
 	"github.com/crossplane/crossplane/v2/internal/xfn"
 	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
@@ -77,12 +78,35 @@ const (
 	errFmtRenderMetadata              = "cannot render metadata for composed resource %q"
 	errFmtGenerateName                = "cannot generate a name for composed resource %q"
 	errFmtCDAsStruct                  = "cannot encode composed resource %q to protocol buffer Struct well-known type"
-	errFmtFatalResult                 = "pipeline step %q returned a fatal result: %s"
 	errFmtInvalidName                 = "cannot apply composed resource %q because it has an invalid name %q. Must be a valid RFC 1123 subdomain name."
 	errFmtGetResourceMapping          = "cannot check if composed resource %q is namespaced (a %s named %s)"
 	errFmtNamespacedXRClusterResource = "cannot apply cluster scoped composed resource %q (a %s named %s) for a namespaced composite resource."
 	errFmtFetchBootstrapRequirements  = "cannot fetch bootstrap required resources for requirement %q"
+	errFmtFetchBootstrapSchemas       = "cannot fetch bootstrap required schema for requirement %q"
+	errFmtNamespaceOverridden         = "cannot create composed resource %q in namespace %q, using XR namespace %q instead"
 )
+
+// PipelineFatalErrorFmt is the format string used by PipelineFatalError.Error
+// and is exported so callers (typically tests) can recognize the error string
+// without depending on the typed value.
+const PipelineFatalErrorFmt = "pipeline step %q returned a fatal result: %s"
+
+// PipelineFatalError indicates that a function pipeline step returned a
+// result with SEVERITY_FATAL. Callers can use errors.As to distinguish it
+// from other reconcile errors and recover any side effects (events,
+// conditions, recorded resource selectors) that the pipeline produced before
+// failing. The same type is returned by the operation reconciler; render
+// packages alias it for caller convenience.
+type PipelineFatalError struct {
+	Step    string
+	Message string
+}
+
+// Error formats the error so that reconciler events and condition messages
+// remain identical to the previous untyped error.
+func (e *PipelineFatalError) Error() string {
+	return fmt.Sprintf(PipelineFatalErrorFmt, e.Step, e.Message)
+}
 
 // Server-side-apply field owners. We need two of these because it's possible
 // an invocation of this controller will operate on the same resource in two
@@ -108,6 +132,8 @@ type FunctionComposer struct {
 	composite xr
 	pipeline  FunctionRunner
 	resources xfn.RequiredResourcesFetcher
+	schemas   xfn.RequiredSchemasFetcher
+	tracker   dependency.Tracker
 }
 
 type xr struct {
@@ -223,6 +249,24 @@ func WithRequiredResourcesFetcher(f xfn.RequiredResourcesFetcher) FunctionCompos
 	}
 }
 
+// WithRequiredSchemasFetcher configures how the FunctionComposer should
+// fetch required schemas for composition functions.
+func WithRequiredSchemasFetcher(f xfn.RequiredSchemasFetcher) FunctionComposerOption {
+	return func(p *FunctionComposer) {
+		p.schemas = f
+	}
+}
+
+// WithResourceTracker configures how the FunctionComposer records the resources
+// an XR depends on - those it composes and those its functions require - so the
+// XR controller can watch them, and so it can seed a function's request with the
+// resources it required last reconcile.
+func WithResourceTracker(t dependency.Tracker) FunctionComposerOption {
+	return func(p *FunctionComposer) {
+		p.tracker = t
+	}
+}
+
 // NewFunctionComposer returns a new Composer that supports composing resources using
 // both Patch and Transform (P&T) logic and a pipeline of Composition Functions.
 func NewFunctionComposer(cached, uncached client.Client, r FunctionRunner, o ...FunctionComposerOption) *FunctionComposer {
@@ -241,6 +285,8 @@ func NewFunctionComposer(cached, uncached client.Client, r FunctionRunner, o ...
 
 		pipeline:  r,
 		resources: xfn.NewExistingRequiredResourcesFetcher(cached),
+		schemas:   xfn.NopRequiredSchemasFetcher{},
+		tracker:   dependency.NopTracker{},
 	}
 
 	for _, fn := range o {
@@ -252,6 +298,7 @@ func NewFunctionComposer(cached, uncached client.Client, r FunctionRunner, o ...
 
 // Compose resources using the Functions pipeline.
 func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructured, req CompositionRequest) (CompositionResult, error) { //nolint:gocognit // We probably don't want any further abstraction for the sake of reduced complexity.
+	ctx = step.ForCompositions(ctx)
 	// Observe our existing composed resources. We need to do this before we
 	// render any P&T templates, so that we can make sure we use the same
 	// composed resource names (as in, metadata.name) every time. We know what
@@ -290,14 +337,31 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	events := []TargetedEvent{}
 	conditions := []TargetedCondition{}
 
+	// The resources this XR's functions require, accumulated across pipeline
+	// steps. We record them - along with the resources the XR composes - so the
+	// XR controller can watch them, and so we can seed them into the function's
+	// request next reconcile.
+	xrKey := client.ObjectKeyFromObject(xr)
+	required := []dependency.Requirement{}
+
 	// The Function context always starts empty.
 	fctx := &structpb.Struct{Fields: map[string]*structpb.Value{}}
+
+	// Get the composition name for tracing attributes.
+	compositionName := ""
+	if req.Revision != nil {
+		compositionName = req.Revision.GetLabels()[v1.LabelCompositionName]
+	}
+
+	// Generate a trace ID for this pipeline execution. All steps in this
+	// reconciliation will share this trace ID for correlation.
+	traceID := uuid.NewString()
 
 	// Run any Composition Functions in the pipeline. Each Function may mutate
 	// the desired state returned by the last, and each Function may produce
 	// results that will be emitted as events.
-	for _, fn := range req.Revision.Spec.Pipeline {
-		req := &fnv1.RunFunctionRequest{Observed: o, Desired: d, Context: fctx}
+	for stepIndex, fn := range req.Revision.Spec.Pipeline {
+		fnreq := &fnv1.RunFunctionRequest{Observed: o, Desired: d, Context: fctx}
 
 		if fn.Input != nil {
 			in := &structpb.Struct{}
@@ -305,10 +369,10 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 				return CompositionResult{}, errors.Wrapf(err, errFmtUnmarshalPipelineStepInput, fn.Step)
 			}
 
-			req.Input = in
+			fnreq.Input = in
 		}
 
-		req.Credentials = map[string]*fnv1.Credentials{}
+		fnreq.Credentials = map[string]*fnv1.Credentials{}
 		for _, cs := range fn.Credentials {
 			// For now, we only support loading credentials from secrets.
 			if cs.Source != v1.FunctionCredentialsSourceSecret || cs.SecretRef == nil {
@@ -320,7 +384,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 				return CompositionResult{}, errors.Wrapf(err, errFmtGetCredentialsFromSecret, fn.Step, cs.Name)
 			}
 
-			req.Credentials[cs.Name] = &fnv1.Credentials{
+			fnreq.Credentials[cs.Name] = &fnv1.Credentials{
 				Source: &fnv1.Credentials_CredentialData{
 					CredentialData: &fnv1.CredentialData{
 						Data: s.Data,
@@ -329,25 +393,79 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			}
 		}
 
-		// Pre-populate bootstrap requirements
+		// Pre-populate the requirements we already know this step needs, so the
+		// function can resolve in a single call and the request's cache tag
+		// reflects their current content. They come from two places: bootstrap
+		// requirements declared on the Composition, and the requirements this
+		// step returned last reconcile (remembered by the tracker). Bootstrap
+		// requirements are authoritative, so we fetch them first.
+		fnreq.RequiredResources = map[string]*fnv1.Resources{}
+		fnreq.RequiredSchemas = map[string]*fnv1.Schema{}
+
 		if fn.Requirements != nil {
-			// Bootstrap requirements were introduced alongside the new field names,
-			// so we only need to support the new required_resources field.
-			req.RequiredResources = map[string]*fnv1.Resources{}
 			for _, sel := range fn.Requirements.RequiredResources {
-				resources, err := c.resources.Fetch(ctx, xfn.ToProtobufResourceSelector(&sel))
+				psel := xfn.ToProtobufResourceSelector(&sel)
+				resources, err := c.resources.Fetch(ctx, psel)
 				if err != nil {
 					return CompositionResult{}, errors.Wrapf(err, errFmtFetchBootstrapRequirements, sel.RequirementName)
 				}
-				req.RequiredResources[sel.RequirementName] = resources
+				fnreq.RequiredResources[sel.RequirementName] = resources
+
+				// Track bootstrap requirements so we watch them, even if the
+				// function doesn't re-declare them in its response.
+				required = append(required, dependency.Requirement{Step: fn.Step, Name: sel.RequirementName, Reference: ReferenceFromSelector(psel)})
+			}
+
+			for _, sel := range fn.Requirements.RequiredSchemas {
+				schema, err := c.schemas.Fetch(ctx, xfn.ToProtobufSchemaSelector(&sel))
+				if err != nil {
+					return CompositionResult{}, errors.Wrapf(err, errFmtFetchBootstrapSchemas, sel.RequirementName)
+				}
+				fnreq.RequiredSchemas[sel.RequirementName] = schema
 			}
 		}
 
-		req.Meta = &fnv1.RequestMeta{Tag: Tag(req)}
+		// Seed the resources this step required last reconcile, under the same
+		// requirement names, so the function sees them on its first call and its
+		// cache tag reflects their current content. We skip names bootstrap
+		// already filled (they're authoritative), and treat this as best-effort:
+		// a fetch failure just means the function resolves that resource itself.
+		for _, r := range c.tracker.Requirements(xrKey, fn.Step) {
+			if _, exists := fnreq.GetRequiredResources()[r.Name]; exists {
+				continue
+			}
+			res, err := c.resources.Fetch(ctx, SelectorFromReference(r.Reference))
+			if err != nil {
+				continue
+			}
+			fnreq.RequiredResources[r.Name] = res
+		}
 
-		rsp, err := c.pipeline.RunFunction(ctx, fn.FunctionRef.Name, req)
+		// NOTE(negz): We seed required resources, but not required
+		// schemas. A function's dynamically required schemas are
+		// resolved after this tag is computed, so a change to one won't
+		// invalidate a cached response until its TTL expires. Bootstrap
+		// schemas (fetched above) are in the tag. Schemas change rarely
+		// and aren't watched, so we accept this.
+		fnreq.Meta = &fnv1.RequestMeta{Tag: Tag(fnreq), Capabilities: xfn.SupportedCapabilities()}
+
+		// Add step metadata to context for use by downstream components like InspectedRunner.
+		stepCtx := step.ContextWithStepMetaForCompositions(ctx, traceID, fn.Step, int32(stepIndex), compositionName)
+
+		rsp, err := c.pipeline.RunFunction(stepCtx, fn.FunctionRef.Name, fnreq)
 		if err != nil {
 			return CompositionResult{}, errors.Wrapf(err, errFmtRunPipelineStep, fn.Step)
+		}
+
+		// Record what this step required so we can watch it, and seed it next
+		// reconcile. The response carries the step's requirements whether it ran
+		// or was served from cache. We track both the current and deprecated
+		// fields, since the fetching runner resolves both.
+		for name, sel := range rsp.GetRequirements().GetResources() {
+			required = append(required, dependency.Requirement{Step: fn.Step, Name: name, Reference: ReferenceFromSelector(sel)})
+		}
+		for name, sel := range rsp.GetRequirements().GetExtraResources() { //nolint:staticcheck // We still resolve the deprecated field, so we must track it too.
+			required = append(required, dependency.Requirement{Step: fn.Step, Name: name, Reference: ReferenceFromSelector(sel)})
 		}
 
 		// If this Function specified a non-zero TTL that's less than
@@ -377,11 +495,11 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			}
 
 			conditions = append(conditions, TargetedCondition{
-				Condition: xpv1.Condition{
-					Type:               xpv1.ConditionType(c.GetType()),
+				Condition: xpv2.Condition{
+					Type:               xpv2.ConditionType(c.GetType()),
 					Status:             status,
 					LastTransitionTime: metav1.Now(),
-					Reason:             xpv1.ConditionReason(c.GetReason()),
+					Reason:             xpv2.ConditionReason(c.GetReason()),
 					Message:            c.GetMessage(),
 				},
 				Target: convertTarget(c.GetTarget()),
@@ -400,7 +518,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 
 			switch rs.GetSeverity() {
 			case fnv1.Severity_SEVERITY_FATAL:
-				return CompositionResult{Events: events, Conditions: conditions}, errors.Errorf(errFmtFatalResult, fn.Step, rs.GetMessage())
+				return CompositionResult{Events: events, Conditions: conditions}, &PipelineFatalError{Step: fn.Step, Message: rs.GetMessage()}
 			case fnv1.Severity_SEVERITY_WARNING:
 				e.Event = event.Warning(reason, errors.New(rs.GetMessage()))
 				e.Detail = fmt.Sprintf("Pipeline step %q", fn.Step)
@@ -457,6 +575,16 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			}
 		}
 
+		// Emit a warning if the XR is namespaced and the composed resource has
+		// a different namespace. The namespace will be overwritten to match the
+		// XR's namespace.
+		if xr.GetNamespace() != "" && cd.GetNamespace() != "" && cd.GetNamespace() != xr.GetNamespace() {
+			events = append(events, TargetedEvent{
+				Event:  event.Warning(reasonNamespaceOverridden, errors.Errorf(errFmtNamespaceOverridden, name, cd.GetNamespace(), xr.GetNamespace())),
+				Target: CompositionTargetComposite,
+			})
+		}
+
 		// Set standard composed resource metadata that is derived from the XR.
 		if err := RenderComposedResourceMetadata(cd, xr, ResourceName(name)); err != nil {
 			return CompositionResult{}, errors.Wrapf(err, errFmtRenderMetadata, name)
@@ -471,7 +599,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		// million names).
 		if cd.GetName() == "" {
 			if err := c.composite.GenerateName(ctx, cd); err != nil {
-				return CompositionResult{}, xerrors.ComposedResourceError{
+				return CompositionResult{}, ComposedResourceError{
 					Message:  fmt.Sprintf(errFmtGenerateName, name),
 					Composed: cd,
 					Err:      err,
@@ -518,6 +646,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	// atomic replace of the entire array. Note that we're relying on the status
 	// patch that immediately follows to load the latest version of uxr from the
 	// API server.
+	//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 	if err := c.client.Patch(ctx, refs, client.Apply, client.ForceOwnership, client.FieldOwner(FieldOwnerXR)); err != nil {
 		// It's important we don't proceed if this fails, because we need to be
 		// sure we've persisted our resource references before we create any new
@@ -555,6 +684,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		// NOTE(phisco): We need to set a field owner unique for each XR here,
 		// this prevents multiple XRs composing the same resource to be
 		// continuously alternated as controllers.
+		//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 		if err := c.client.Patch(ctx, cd.Resource, client.Apply, client.ForceOwnership, client.FieldOwner(ComposedFieldOwnerName(xr))); err != nil {
 			if kerrors.IsInvalid(err) {
 				// We tried applying an invalid resource, we can't tell whether
@@ -578,7 +708,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 				continue
 			}
 
-			return CompositionResult{}, xerrors.ComposedResourceError{
+			return CompositionResult{}, ComposedResourceError{
 				Message:  fmt.Sprintf(errFmtApplyCD, name),
 				Composed: cd.Resource,
 				Err:      err,
@@ -620,6 +750,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 
 	// NOTE(phisco): Here we are fine using a hardcoded field owner as there is
 	// no risk of conflict between different XRs.
+	//nolint:staticcheck // TODO(adamwg) Stop using client.Apply after the v2.2 release.
 	if err := c.client.Status().Patch(ctx, xr, client.Apply, client.ForceOwnership, client.FieldOwner(FieldOwnerXR)); err != nil {
 		// Note(phisco): here we are fine with this error being terminal, as
 		// there is no other resource to apply that might eventually resolve
@@ -631,12 +762,25 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 
 	switch d.GetComposite().GetReady() {
 	case fnv1.Ready_READY_TRUE:
-		ready = ptr.To(true)
+		ready = new(true)
 	case fnv1.Ready_READY_FALSE:
-		ready = ptr.To(false)
+		ready = new(false)
 	case fnv1.Ready_READY_UNSPECIFIED:
 		// Remains nil.
 	}
+
+	// Record the resources this XR depends on so the controller can watch them.
+	// A resource it composes is matched by name; a resource it requires is
+	// matched by name or label.
+	composed := make([]dependency.Reference, 0, len(desired))
+	for _, cd := range desired {
+		composed = append(composed, dependency.Reference{
+			GVK:       cd.Resource.GetObjectKind().GroupVersionKind(),
+			Namespace: cd.Resource.GetNamespace(),
+			Name:      cd.Resource.GetName(),
+		})
+	}
+	c.tracker.Track(xrKey, composed, required)
 
 	return CompositionResult{
 		Composed:          resources,
@@ -820,17 +964,29 @@ func (d *DeletingComposedResourceGarbageCollector) GarbageCollectComposedResourc
 		}
 	}
 
+	// Always use foreground deletion.  There is no impact on Managed Resources,
+	// and nested XRs will be deleted "bottom up".
+	do := &client.DeleteOptions{}
+	client.PropagationPolicy(metav1.DeletePropagationForeground).ApplyToDelete(do)
 	for name, cd := range del {
-		// Don't garbage collect composed resources that someone else controls.
+		// Only garbage collect composed resources that we actually control.
 		//
-		// We do garbage collect composed resources that no-one controls. If a
-		// composed resource appears in observed (i.e. appears in the XR's
-		// spec.resourceRefs) but doesn't have a controller ref, most likely we
-		// created it but its controller ref was stripped. In this situation it
-		// would be permissible for us to adopt the composed resource by setting
-		// our XR as the controller ref, then delete it. So we may as well just
-		// go straight to deleting it.
-		if c := metav1.GetControllerOf(cd.Resource); c != nil && c.UID != owner.GetUID() {
+		// We set ourselves as the controller reference of every resource we
+		// compose, so a resource whose controller reference isn't ours is not
+		// ours to delete - even though it appears in observed because it's
+		// referenced by the XR's spec.resourceRefs. Deleting a resource we don't
+		// control would let anyone able to edit spec.resourceRefs use us as a
+		// confused deputy to delete arbitrary resources (see
+		// GHSA-77cv-mrm6-fr3c).
+		switch c := metav1.GetControllerOf(cd.Resource); {
+		case c == nil:
+			// No controller reference: we can't prove we composed this resource,
+			// so we never delete it. A resource we did compose can transiently
+			// lose its controller reference - e.g. a backup/restore that doesn't
+			// preserve owner UIDs - and will be re-adopted and collected on a
+			// later reconcile once the reference is restored.
+			continue
+		case c.UID != owner.GetUID():
 			return errors.Errorf(errFmtControllerMismatch, name, c.Kind, c.Name)
 		}
 
@@ -842,8 +998,11 @@ func (d *DeletingComposedResourceGarbageCollector) GarbageCollectComposedResourc
 		if err := d.client.Update(ctx, cd.Resource); resource.IgnoreNotFound(err) != nil {
 			return errors.Wrapf(err, errFmtCleanupLabelsCD, name, cd.Resource.GetObjectKind().GroupVersionKind().Kind, cd.Resource.GetName())
 		}
+		if uid := cd.Resource.GetUID(); uid != "" {
+			do.Preconditions = &metav1.Preconditions{UID: &uid}
+		}
 		// Delete the composed resource.
-		if err := d.client.Delete(ctx, cd.Resource); resource.IgnoreNotFound(err) != nil {
+		if err := d.client.Delete(ctx, cd.Resource, do); resource.IgnoreNotFound(err) != nil {
 			return errors.Wrapf(err, errFmtDeleteCD, name, cd.Resource.GetObjectKind().GroupVersionKind().Kind, cd.Resource.GetName())
 		}
 	}
@@ -858,6 +1017,7 @@ func UpdateResourceRefs(xr resource.Composite, desired ComposedResourceStates) {
 
 	refs := make([]corev1.ObjectReference, 0, len(desired))
 	for _, dr := range desired {
+		//nolint:staticcheck // TODO(adamwg) Stop using meta.ReferenceTo after the v2.2 release.
 		ref := meta.ReferenceTo(dr.Resource, dr.Resource.GetObjectKind().GroupVersionKind())
 
 		// If the XR is namespaced it can only compose resources in its own
@@ -873,7 +1033,7 @@ func UpdateResourceRefs(xr resource.Composite, desired ComposedResourceStates) {
 	// We want to ensure our refs are stable.
 	sort.Slice(refs, func(i, j int) bool {
 		ri, rj := refs[i], refs[j]
-		return ri.APIVersion+ri.Kind+ri.Name < rj.APIVersion+rj.Kind+rj.Name
+		return ri.APIVersion+ri.Kind+ri.Name+ri.Namespace < rj.APIVersion+rj.Kind+rj.Name+rj.Namespace
 	})
 
 	xr.SetResourceReferences(refs)

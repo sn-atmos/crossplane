@@ -19,26 +19,21 @@ package controller
 
 import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
-
-	"github.com/crossplane/crossplane/v2/internal/xpkg"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xpkg"
 )
 
 // Options specific to pkg controllers.
 type Options struct {
 	controller.Options
 
-	// Cache for package OCI images.
-	Cache xpkg.PackageCache
+	// Client for fetching and parsing packages.
+	Client xpkg.Client
 
 	// Namespace used to unpack and run packages.
 	Namespace string
 
 	// ServiceAccount is the core Crossplane ServiceAccount name.
 	ServiceAccount string
-
-	// FetcherOptions can be used to add optional parameters to
-	// NewK8sFetcher.
-	FetcherOptions []xpkg.FetcherOpt
 
 	// PackageRuntime specifies the runtime to use for package runtime.
 	PackageRuntime ActiveRuntime

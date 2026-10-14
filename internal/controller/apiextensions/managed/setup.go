@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package managed manages the lifecycle of MRD controllers.
 package managed
 
 import (
@@ -27,10 +26,13 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
+	"github.com/crossplane/crossplane/apis/v2/apiextensions/v1alpha1"
 	apiextensionscontroller "github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
+	"github.com/crossplane/crossplane/v2/internal/engine"
+	"github.com/crossplane/crossplane/v2/internal/features"
 	"github.com/crossplane/crossplane/v2/internal/ssa"
 )
 
@@ -39,14 +41,26 @@ import (
 func Setup(mgr ctrl.Manager, o apiextensionscontroller.Options) error {
 	name := "mrd/" + strings.ToLower(v1alpha1.ManagedResourceDefinitionKind)
 
-	r := NewReconciler(mgr,
+	opts := []ReconcilerOption{
 		WithLogger(o.Logger.WithValues("controller", name)),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)),
 		WithManagedFieldsUpgrader(ssa.NewPatchingManagedFieldsUpgrader(
 			mgr.GetClient(),
 			ssa.ExactMatch(FieldOwnerMRD),
 		)),
-	)
+	}
+
+	if o.Features.Enabled(features.EnableAlphaProviderDeletionProtection) &&
+		o.Features.Enabled(features.EnableBetaUsages) {
+		opts = append(opts,
+			WithControllerEngine(o.ControllerEngine),
+			WithFeatures(o.Features),
+		)
+	} else if o.Features.Enabled(features.EnableAlphaProviderDeletionProtection) {
+		return errors.New("provider deletion protection requires usages to be enabled (--enable-usages)")
+	}
+
+	r := NewReconciler(mgr, opts...)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
@@ -78,6 +92,21 @@ func WithRecorder(er event.Recorder) ReconcilerOption {
 func WithManagedFieldsUpgrader(u ssa.ManagedFieldsUpgrader) ReconcilerOption {
 	return func(r *Reconciler) {
 		r.managedFields = u
+	}
+}
+
+// WithControllerEngine specifies the engine used to dynamically start
+// protection controllers that watch MR instances.
+func WithControllerEngine(e *engine.ControllerEngine) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.engine = e
+	}
+}
+
+// WithFeatures specifies the feature flags the Reconciler should use.
+func WithFeatures(f *feature.Flags) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.features = f
 	}
 }
 

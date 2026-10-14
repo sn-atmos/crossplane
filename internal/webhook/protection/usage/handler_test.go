@@ -31,7 +31,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	"github.com/crossplane/crossplane/v2/apis/protection/v1beta1"
+	"github.com/crossplane/crossplane/apis/v2/protection/v1beta1"
 	"github.com/crossplane/crossplane/v2/internal/protection"
 	"github.com/crossplane/crossplane/v2/internal/protection/usage"
 )
@@ -196,24 +196,26 @@ func TestHandle(t *testing.T) {
 				},
 				f: FinderFn(func(_ context.Context, _ usage.Object) ([]protection.Usage, error) {
 					usages := []protection.Usage{
-						&v1beta1.Usage{
-							ObjectMeta: metav1.ObjectMeta{
-								Namespace: "default",
-								Name:      "used-by-some-resource",
-							},
-							Spec: v1beta1.UsageSpec{
-								Of: v1beta1.NamespacedResource{
-									APIVersion: "nop.crossplane.io/v1alpha1",
-									Kind:       "NopResource",
-									ResourceRef: &v1beta1.NamespacedResourceRef{
-										Name: "used-resource",
-									},
+						&protection.InternalUsage{
+							Usage: v1beta1.Usage{
+								ObjectMeta: metav1.ObjectMeta{
+									Namespace: "default",
+									Name:      "used-by-some-resource",
 								},
-								By: &v1beta1.Resource{
-									APIVersion: "nop.crossplane.io/v1alpha1",
-									Kind:       "NopResource",
-									ResourceRef: &v1beta1.ResourceRef{
-										Name: "using-resource",
+								Spec: v1beta1.UsageSpec{
+									Of: v1beta1.NamespacedResource{
+										APIVersion: "nop.crossplane.io/v1alpha1",
+										Kind:       "NopResource",
+										ResourceRef: &v1beta1.NamespacedResourceRef{
+											Name: "used-resource",
+										},
+									},
+									By: &v1beta1.Resource{
+										APIVersion: "nop.crossplane.io/v1alpha1",
+										Kind:       "NopResource",
+										ResourceRef: &v1beta1.ResourceRef{
+											Name: "using-resource",
+										},
 									},
 								},
 							},
@@ -259,19 +261,21 @@ func TestHandle(t *testing.T) {
 				},
 				f: FinderFn(func(_ context.Context, _ usage.Object) ([]protection.Usage, error) {
 					usages := []protection.Usage{
-						&v1beta1.Usage{
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "used-by-some-resource",
-							},
-							Spec: v1beta1.UsageSpec{
-								Of: v1beta1.NamespacedResource{
-									APIVersion: "nop.crossplane.io/v1alpha1",
-									Kind:       "NopResource",
-									ResourceRef: &v1beta1.NamespacedResourceRef{
-										Name: "used-resource",
-									},
+						&protection.InternalUsage{
+							Usage: v1beta1.Usage{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "used-by-some-resource",
 								},
-								Reason: &protected,
+								Spec: v1beta1.UsageSpec{
+									Of: v1beta1.NamespacedResource{
+										APIVersion: "nop.crossplane.io/v1alpha1",
+										Kind:       "NopResource",
+										ResourceRef: &v1beta1.NamespacedResourceRef{
+											Name: "used-resource",
+										},
+									},
+									Reason: &protected,
+								},
 							},
 						},
 					}
@@ -315,16 +319,18 @@ func TestHandle(t *testing.T) {
 				},
 				f: FinderFn(func(_ context.Context, _ usage.Object) ([]protection.Usage, error) {
 					usages := []protection.Usage{
-						&v1beta1.Usage{
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "used-by-some-resource",
-							},
-							Spec: v1beta1.UsageSpec{
-								Of: v1beta1.NamespacedResource{
-									APIVersion: "nop.crossplane.io/v1alpha1",
-									Kind:       "NopResource",
-									ResourceRef: &v1beta1.NamespacedResourceRef{
-										Name: "used-resource",
+						&protection.InternalUsage{
+							Usage: v1beta1.Usage{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "used-by-some-resource",
+								},
+								Spec: v1beta1.UsageSpec{
+									Of: v1beta1.NamespacedResource{
+										APIVersion: "nop.crossplane.io/v1alpha1",
+										Kind:       "NopResource",
+										ResourceRef: &v1beta1.NamespacedResourceRef{
+											Name: "used-resource",
+										},
 									},
 								},
 							},

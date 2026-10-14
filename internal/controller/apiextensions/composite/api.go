@@ -30,15 +30,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/xcrd"
 
-	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
-	"github.com/crossplane/crossplane/v2/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/apis/v2/apiextensions/v1"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 )
 
 // Error strings.
@@ -160,7 +160,7 @@ func (f *APIRevisionFetcher) Fetch(ctx context.Context, cr resource.Composite) (
 
 	// We've already selected a revision, and our update policy is manual.
 	// Just fetch and return the selected revision.
-	if current != nil && pol != nil && *pol == xpv1.UpdateManual {
+	if current != nil && pol != nil && *pol == xpv2.UpdateManual {
 		rev := &v1.CompositionRevision{}
 		err := f.client.Get(ctx, types.NamespacedName{Name: current.Name}, rev)
 
@@ -200,7 +200,7 @@ func (f *APIRevisionFetcher) getCompositionRevisionList(ctx context.Context, cr 
 	rl := &v1.CompositionRevisionList{}
 	ml := client.MatchingLabels{}
 
-	if cr.GetCompositionUpdatePolicy() != nil && *cr.GetCompositionUpdatePolicy() == xpv1.UpdateAutomatic &&
+	if cr.GetCompositionUpdatePolicy() != nil && *cr.GetCompositionUpdatePolicy() == xpv2.UpdateAutomatic &&
 		cr.GetCompositionRevisionSelector() != nil {
 		ml = cr.GetCompositionRevisionSelector().MatchLabels
 	}
@@ -326,6 +326,27 @@ func (s *APIDefaultCompositionSelector) SelectComposition(ctx context.Context, c
 	return nil
 }
 
+// SelectCompositionRevision selects the default composition revision if neither a reference nor
+// selector is given in composite resource.
+func (s *APIDefaultCompositionSelector) SelectCompositionRevision(ctx context.Context, cp resource.Composite) error {
+	if cp.GetCompositionRevisionSelector() != nil || cp.GetCompositionRevisionReference() != nil {
+		return nil
+	}
+	def := &v1.CompositeResourceDefinition{}
+	if err := s.client.Get(ctx, meta.NamespacedNameOf(&s.defRef), def); err != nil {
+		return errors.Wrap(err, errGetXRD)
+	}
+
+	if def.Spec.DefaultCompositionRevisionSelector == nil {
+		return nil
+	}
+
+	cp.SetCompositionRevisionSelector(def.Spec.DefaultCompositionRevisionSelector)
+	s.recorder.Event(cp, event.Normal(reasonCompositionSelection, "Default revision selector has been selected"))
+
+	return nil
+}
+
 // NewEnforcedCompositionSelector returns a EnforcedCompositionSelector.
 func NewEnforcedCompositionSelector(c client.Client, defRef corev1.ObjectReference, r event.Recorder) *EnforcedCompositionSelector {
 	return &EnforcedCompositionSelector{client: c, defRef: defRef, recorder: r}
@@ -411,7 +432,7 @@ func (c *APIConfigurator) Configure(ctx context.Context, cp resource.Composite, 
 		return nil
 	}
 
-	lcp.SetWriteConnectionSecretToReference(&xpv1.SecretReference{
+	lcp.SetWriteConnectionSecretToReference(&xpv2.SecretReference{
 		Name:      string(cp.GetUID()),
 		Namespace: *rev.Spec.WriteConnectionSecretsToNamespace,
 	})
